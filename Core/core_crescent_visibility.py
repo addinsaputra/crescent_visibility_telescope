@@ -10,9 +10,16 @@ from openpyxl.utils import get_column_letter
 # Import modul yang diperlukan
 from visual_limit_schaefer import visual_limit
 from visual_limit_kastner import hitung_luminansi_kastner, crescent_area
-from crumey_telescope_correction import (
-    calculate_crumey_telescope_visibility
-)  # Integrasi model Schaefer & Crumey
+# Import langsung dari modul Crumey (tanpa intermediary crumey_telescope_correction.py)
+from full_rumus_crumey import (
+    hilal_naked_eye_visibility,
+    nL_to_cd_m2,
+    cd_m2_to_nL,
+    arcmin2_to_sr,
+    contrast_threshold,
+    crescent_area_arcmin2,
+)
+from telescope_limit import TelescopeVisibilityModel
 
 # Import modul cuaca ERA5 (Open-Meteo)
 from atmosfer_era5 import (
@@ -592,46 +599,94 @@ class HilalVisibilityCalculator:
     
     def hitung_visibilitas_naked_eye(self,
                                       luminansi_hilal_nl: float,
-                                      sky_brightness_nl: float) -> Tuple[float, float]:
+                                      sky_brightness_nl: float,
+                                      posisi: dict,
+                                      F_naked: float = 2.5) -> tuple:
         """
-        Menghitung visibilitas untuk pengamatan naked eye (mata telanjang).
-        
-        Parameters:
-        -----------
+        Menghitung visibilitas hilal mata telanjang menggunakan model Crumey (2014).
+
+        Perubahan dari versi lama:
+          LAMA : hanya menghitung rasio L/B → tidak ada threshold persepsi
+          BARU : menghitung Weber contrast → bandingkan dengan Crumey threshold
+                 menggunakan luas sabit dan kecerahan langit yang benar
+
+        Parameters
+        ----------
         luminansi_hilal_nl : float
-            Luminansi hilal dalam nL
+            Luminansi permukaan hilal [nanoLambert] dari model Kastner
         sky_brightness_nl : float
-            Sky brightness dalam nL
-            
-        Returns:
-        --------
+            Kecerahan langit [nanoLambert] dari model Schaefer
+        posisi : dict
+            Dictionary posisi matahari & bulan (harus berisi:
+            'elongation', 'moon_semidiameter')
+        F_naked : float
+            Field factor untuk naked eye (default 2.5)
+
+        Returns
+        -------
         rasio_kontras : float
-            Rasio kontras R = L/B
+            Weber contrast C = (L - B) / B
         delta_m : float
-            Delta magnitudo
+            Margin visibilitas [mag]: 2.5 × log₁₀(|C_obj| / C_th)
+            Positif = terlihat, negatif = tidak terlihat
+        crumey_result : dict
+            Hasil lengkap dari hilal_naked_eye_visibility()
         """
         if sky_brightness_nl <= 0.0:
             raise ValueError("Sky brightness harus positif")
-        
-        rasio_kontras = luminansi_hilal_nl / sky_brightness_nl
-        delta_m = 2.5 * math.log10(rasio_kontras) if rasio_kontras > 0.0 else float('-inf')
-        
-        return rasio_kontras, delta_m
+
+        # Panggil model Crumey untuk naked eye
+        result = hilal_naked_eye_visibility(
+            L_hilal_nL=luminansi_hilal_nl,
+            B_sky_nL=sky_brightness_nl,
+            elongation_deg=posisi['elongation'],
+            moon_sd_deg=float(posisi['moon_semidiameter']),
+            F=F_naked,
+            mode='auto',  # otomatis pilih scotopic/combined berdasarkan B
+        )
+
+        rasio_kontras = result['C_obj']
+        delta_m = result['delta_m']
+
+        # Hindari -inf: hitung margin saat C_obj ≤ 0
+        # Formula: 2.5 × (log10(L/B) − log10(C_th))
+        # Ini mempertahankan telescope gain:
+        #   delta_m_tel − delta_m_ne = 2.5 × log10(C_th_ne / C_th_tel)
+        if math.isinf(delta_m) and delta_m < 0:
+            C_obj = result['C_obj']
+            C_th = result['C_th']
+            L_over_B = max(1.0 + C_obj, 1e-15)
+            if C_th > 0:
+                delta_m = 2.5 * (math.log10(L_over_B) - math.log10(C_th))
+            else:
+                delta_m = -99.0
+
+        return rasio_kontras, delta_m, result
     
     def hitung_visibilitas_teleskop(self,
                                      luminansi_hilal_nl: float,
                                      sky_brightness_nl: float,
                                      posisi: Dict[str, float],
-                                     k_v: float,
                                      aperture: float = 66.0,
                                      magnification: float = 50.0,
                                      transmission: float = 0.95,
                                      n_surfaces: int = 6,
                                      central_obstruction: float = 0.0,
                                      observer_age: float = 22.0,
-                                     seeing: float = 3.0) -> Tuple[float, float, float, float, float]:
+                                     seeing: float = 3.0,
+                                     field_factor: float = 2.4) -> Tuple[float, float, float, float, float]:
         """
-        Menghitung visibilitas untuk pengamatan dengan teleskop menggunakan model terintegrasi Schaefer-Crumey.
+        Menghitung visibilitas hilal melalui teleskop.
+        Pipeline langsung: Schaefer (telescope_limit) + Crumey (full_rumus_crumey).
+
+        Pipeline:
+          1. Hitung luas sabit dari elongasi & semidiameter
+          2. Hitung faktor teleskop Schaefer: Fb, Ft, Fp, Fa, Fm
+          3. Weber contrast: C_obj = (Lt − B) / B  (dipertahankan, Crumey Eq. 76)
+          4. Background apparent: Ba = (δmin/p)² × B / Ft  (Crumey Eq. 66)
+          5. Area efektif retina: A_eff = A_sr × M²
+          6. Threshold Crumey: φ = FT × FM × F, C_th = contrast_threshold(A_eff, Ba, φ)
+          7. Keputusan: visible = (C_obj > C_th)
 
         Parameters:
         -----------
@@ -641,8 +696,6 @@ class HilalVisibilityCalculator:
             Sky brightness dalam nL (B_0)
         posisi : Dict[str, float]
             Dictionary posisi matahari dan bulan
-        k_v : float
-            Koefisien ekstingsi band V (tidak digunakan)
         aperture : float
             Diameter aperture teleskop (mm)
         magnification : float
@@ -656,7 +709,9 @@ class HilalVisibilityCalculator:
         observer_age : float
             Usia pengamat (tahun, default: 22.0)
         seeing : float
-            Ukuran seeing disk (arcseconds, default: 2.0)
+            Ukuran seeing disk (arcseconds, default: 3.0)
+        field_factor : float
+            Personal/kondisi lapangan field factor F (default: 2.4)
 
         Returns:
         --------
@@ -669,38 +724,96 @@ class HilalVisibilityCalculator:
         c_th_tel : float
             Contrast Threshold berdasarkan Crumey
         delta_m_tel : float
-            Margin teleskop (log10 rasio visibilitas), >0 = detectable
+            Margin teleskop [mag]: 2.5 × log₁₀(C_obj / C_th), >0 = detectable
         """
-        # Jalankan fungsi terpadu visibilitas Crumey + Schaefer
-        result = calculate_crumey_telescope_visibility(
-            B_sky_nl=sky_brightness_nl,
-            L_hilal_nl=luminansi_hilal_nl,
-            elongation_deg=posisi['elongation'],
-            moon_sd_deg=float(posisi['moon_semidiameter']),
-            aperture=aperture,
-            magnification=magnification,
-            central_obstruction=central_obstruction,
-            transmission=transmission,
-            n_surfaces=n_surfaces,
-            age=observer_age,
-            seeing=seeing
-        )
-        
-        # Ekstrak hasil
-        B_eff = result['B_eff_nl']
-        I_eff = result['I_eff_nl']
-        delta_m_tel = result['margin_tel']  # Margin berdasarkan Crumey
-        rasio_kontras_tel = result['C_obj'] # Weber contrast
-        c_th_tel = result['C_thr_tel']
+        Lt_nL = luminansi_hilal_nl
+        B_nL = sky_brightness_nl
 
-        # Return hasil perhitungan
-        return I_eff, B_eff, rasio_kontras_tel, c_th_tel, delta_m_tel
+        # ── Langkah 1: Luas sabit ─────────────────────────────────────────
+        A_arcmin2 = crescent_area_arcmin2(
+            posisi['elongation'], float(posisi['moon_semidiameter'])
+        )
+        A_sr = arcmin2_to_sr(A_arcmin2)
+
+        # ── Langkah 2: Faktor koreksi teleskop (Schaefer) ─────────────────
+        model = TelescopeVisibilityModel()
+        factors = model.calculate_factors(
+            D=aperture,
+            Ds=central_obstruction,
+            M=magnification,
+            age=observer_age,
+            t1=transmission,
+            n=n_surfaces,
+            theta=seeing
+        )
+
+        # ── Langkah 3: Weber contrast (dipertahankan, Crumey Eq. 76) ─────
+        # Hilal = extended source → kontras Weber dipertahankan melalui teleskop
+        if B_nL <= 0:
+            return 0.0, 0.0, float('nan'), float('nan'), -99.0
+
+        C_obj = (Lt_nL - B_nL) / B_nL
+
+        # ── Langkah 4: Background apparent melalui teleskop ───────────────
+        # Crumey (2014) Eq. 66: Ba = (δmin/p)² × B / Ft
+        d_exit = factors["exit_pupil"]   # exit pupil teleskop [mm]
+        De = factors["De"]               # diameter pupil mata [mm]
+        Ft = factors["Ft"]               # 1/transmittance
+        delta_min = min(d_exit, De)
+        Ba_factor = (delta_min / De) ** 2 / Ft   # Crumey Eq. 66
+        B_corr_nL  = B_nL  * Ba_factor
+        Lt_corr_nL = Lt_nL * Ba_factor   # extended source: faktor sama
+
+        B_cd  = nL_to_cd_m2(B_corr_nL)
+        Lt_cd = nL_to_cd_m2(Lt_corr_nL)
+
+        # ── Langkah 5: Area efektif retina ────────────────────────────────
+        # Magnifikasi memperbesar area angular di retina: A_eff = A × M²
+        A_eff = A_sr * (magnification ** 2)
+
+        # ── Langkah 6: Threshold Crumey ───────────────────────────────────
+        # Crumey (2014) Sec. 3.2: φ = FT × FM × F
+        #   FT = √2 (koreksi monocular, Sec. 1.6.4)
+        #   FM = 1.0 (faktor magnifikasi, Eq. 83 — netral untuk extended source)
+        #   F  = field_factor (personal/kondisi lapangan)
+        if B_cd <= 0:
+            return cd_m2_to_nL(Lt_cd), 0.0, C_obj, float('nan'), -99.0
+
+        FT = math.sqrt(2)   # monocular viewing correction (Sec. 1.6.4)
+        FM = 1.0             # magnification factor (Eq. 83)
+        phi = FT * FM * field_factor  # Crumey Sec. 3.2
+        c_th_tel = contrast_threshold(A_eff, B_cd, F=phi, mode='auto')
+
+        # ── Langkah 7: Margin visibilitas ─────────────────────────────────
+        if C_obj > 0 and c_th_tel > 0:
+            delta_m_tel = 2.5 * math.log10(C_obj / c_th_tel)
+        else:
+            delta_m_tel = float('-inf')
+
+        # Hindari -inf: hitung margin saat C_obj ≤ 0
+        # Formula: 2.5 × (log10(L/B) − log10(C_th))
+        # Ini mempertahankan telescope gain:
+        #   delta_m_tel − delta_m_ne = 2.5 × log10(C_th_ne / C_th_tel)
+        if math.isinf(delta_m_tel) and delta_m_tel < 0:
+            L_over_B = max(1.0 + C_obj, 1e-15)
+            if c_th_tel > 0:
+                delta_m_tel = 2.5 * (math.log10(L_over_B) - math.log10(c_th_tel))
+            else:
+                delta_m_tel = -99.0
+
+        # Konversi balik cd/m² → nL untuk output
+        I_eff = cd_m2_to_nL(Lt_cd)
+        B_eff = cd_m2_to_nL(B_cd)
+
+        return I_eff, B_eff, C_obj, c_th_tel, delta_m_tel
 
     def hitung_visibilitas_pada_waktu(self,
                                        waktu_local: datetime,
                                        observing_location: ObservingLocation,
                                        aperture: float = 66.0,
-                                       magnification: float = 50.0) -> Dict[str, Any]:
+                                       magnification: float = 50.0,
+                                       F_naked: float = 2.5,
+                                       field_factor: float = 2.4) -> Dict[str, Any]:
         """
         Menghitung visibilitas hilal pada waktu tertentu.
         RH dan T diinterpolasi untuk waktu spesifik ini.
@@ -727,8 +840,9 @@ class HilalVisibilityCalculator:
                 'moon_alt': posisi['moon_alt'],
                 'sun_alt': posisi['sun_alt'],
                 'valid': False,
-                'delta_m_ne': float('-inf'),
-                'delta_m_tel': float('-inf'),
+                'delta_m_ne': -99.0,
+                'delta_m_tel': -99.0,
+                'telescope_gain': 0.0,
                 'rh': rh,
                 'temperature': temperature
             }
@@ -740,18 +854,26 @@ class HilalVisibilityCalculator:
         luminansi_hilal_nl = self.hitung_luminansi_hilal_kastner(posisi, k_v)
         
         # Hitung visibilitas naked eye
-        rasio_kontras_ne, delta_m_ne = self.hitung_visibilitas_naked_eye(
-            luminansi_hilal_nl, sky_brightness_nl
+        rasio_kontras_ne, delta_m_ne, crumey_ne = self.hitung_visibilitas_naked_eye(
+            luminansi_hilal_nl, sky_brightness_nl, posisi, F_naked=F_naked
         )
-        
+
         # Hitung visibilitas teleskop
         (luminansi_hilal_tel_nl, sky_brightness_tel_nl,
          rasio_kontras_tel, c_th_tel, delta_m_tel) = self.hitung_visibilitas_teleskop(
-            luminansi_hilal_nl, sky_brightness_nl, posisi, k_v,
+            luminansi_hilal_nl, sky_brightness_nl, posisi,
             aperture=aperture,
-            magnification=magnification
+            magnification=magnification,
+            field_factor=field_factor
         )
-        
+
+        # Telescope gain: keuntungan threshold teleskop vs naked eye [mag]
+        c_th_ne = crumey_ne['C_th']
+        if c_th_tel > 0 and c_th_ne > 0:
+            telescope_gain = 2.5 * math.log10(c_th_ne / c_th_tel)
+        else:
+            telescope_gain = 0.0
+
         return {
             'waktu_local': waktu_local,
             'moon_alt': posisi['moon_alt'],
@@ -767,8 +889,10 @@ class HilalVisibilityCalculator:
             'rasio_kontras_ne': rasio_kontras_ne,
             'rasio_kontras_tel': rasio_kontras_tel,
             'c_th_tel': c_th_tel,
+            'telescope_gain': telescope_gain,
             'rh': rh,
             'temperature': temperature,
+            'crumey_ne_C_th': crumey_ne['C_th'],
             'valid': True
         }
     
@@ -777,61 +901,73 @@ class HilalVisibilityCalculator:
                                   observing_location: ObservingLocation,
                                   aperture: float = 66.0,
                                   magnification: float = 50.0,
+                                  F_naked: float = 2.5,
+                                  field_factor: float = 2.4,
                                   interval_menit: int = 2,
-                                  min_moon_alt: float = 2.0) -> Dict[str, Any]:
+                                  min_moon_alt: float = 2.0,
+                                  start_delay_menit: int = 3) -> Dict[str, Any]:
         """
         Loop dari sunset hingga bulan mendekati horizon untuk mencari
         waktu optimal (delta_m maksimum). RH dan T diinterpolasi per timestep.
+
+        Parameters
+        ----------
+        start_delay_menit : int
+            Delay dalam menit setelah sunset sebelum loop dimulai (default 3).
+            Saat sunset langit masih sangat terang sehingga timestep awal
+            selalu menghasilkan delta_m sangat negatif dan tidak informatif.
         """
-        print(f"\n  Mencari visibilitas optimal (interval: {interval_menit} menit)...")
+        print(f"\n  Mencari visibilitas optimal (interval: {interval_menit} menit, "
+              f"start delay: {start_delay_menit} menit)...")
         print(f"  RH dan T diinterpolasi per timestep")
-        
+
         # Inisialisasi variabel tracking
         best_result_ne = None
         best_result_tel = None
-        best_delta_m_ne = float('-inf')
-        best_delta_m_tel = float('-inf')
-        
+        best_delta_m_ne = -99.0
+        best_delta_m_tel = -99.0
+
         visibility_start_ne = None
         visibility_start_tel = None
-        visibility_end_ne = None
-        visibility_end_tel = None
-        
+        visible_count_ne = 0
+        visible_count_tel = 0
+
         all_results = []
-        current_time = sunset_local
+        current_time = sunset_local + timedelta(minutes=start_delay_menit)
         step_count = 0
         max_steps = 120
-        
+
         while step_count < max_steps:
             result = self.hitung_visibilitas_pada_waktu(
-                current_time, observing_location, aperture, magnification
+                current_time, observing_location, aperture, magnification,
+                F_naked=F_naked, field_factor=field_factor
             )
-            
+
             all_results.append(result)
-            
+
             if not result['valid'] or result['moon_alt'] < min_moon_alt:
                 print(f"    Berhenti: moon_alt = {result['moon_alt']:.2f}° (< {min_moon_alt}°)")
                 break
-            
+
             if result['delta_m_ne'] > best_delta_m_ne:
                 best_delta_m_ne = result['delta_m_ne']
                 best_result_ne = result
-            
+
             if result['delta_m_tel'] > best_delta_m_tel:
                 best_delta_m_tel = result['delta_m_tel']
                 best_result_tel = result
-            
-            # Track window visibilitas (first visible -> last visible)
+
+            # Track visibilitas: hitung jumlah timestep yang benar-benar visible
             if result['delta_m_ne'] > 0:
+                visible_count_ne += 1
                 if visibility_start_ne is None:
                     visibility_start_ne = current_time
-                visibility_end_ne = current_time
 
             if result['delta_m_tel'] > 0:
+                visible_count_tel += 1
                 if visibility_start_tel is None:
                     visibility_start_tel = current_time
-                visibility_end_tel = current_time
-            
+
             # Tampilkan progress
             waktu_str = result['waktu_local'].strftime('%H:%M:%S')
             rh_val = result.get('rh', 0) or 0
@@ -841,23 +977,17 @@ class HilalVisibilityCalculator:
                   f"B={result['sky_brightness_nl']:8.1e} | "
                   f"L={result['luminansi_hilal_nl']:8.1e} | "
                   f"dm_ne={result['delta_m_ne']:+5.2f} | "
-                  f"dm_tel={result['delta_m_tel']:+5.2f}")
-            
+                  f"dm_tel={result['delta_m_tel']:+5.2f} | "
+                  f"gain={result['telescope_gain']:+.2f}")
+
             current_time += timedelta(minutes=interval_menit)
             step_count += 1
-        
-        print(f"  Selesai: {len(all_results)} timestep dihitung")
-        
-        # Hitung durasi dari window (start -> end)
-        if visibility_start_ne and visibility_end_ne:
-            visibility_duration_ne = int((visibility_end_ne - visibility_start_ne).total_seconds() / 60) + interval_menit
-        else:
-            visibility_duration_ne = 0
 
-        if visibility_start_tel and visibility_end_tel:
-            visibility_duration_tel = int((visibility_end_tel - visibility_start_tel).total_seconds() / 60) + interval_menit
-        else:
-            visibility_duration_tel = 0
+        print(f"  Selesai: {len(all_results)} timestep dihitung")
+
+        # Durasi = jumlah timestep visible × interval (akurat meski ada gap)
+        visibility_duration_ne = visible_count_ne * interval_menit
+        visibility_duration_tel = visible_count_tel * interval_menit
 
         return {
             'optimal_time_ne': best_result_ne['waktu_local'] if best_result_ne else None,
@@ -866,6 +996,7 @@ class HilalVisibilityCalculator:
             'optimal_time_tel': best_result_tel['waktu_local'] if best_result_tel else None,
             'optimal_delta_m_tel': best_delta_m_tel,
             'optimal_moon_alt_tel': best_result_tel['moon_alt'] if best_result_tel else None,
+            'optimal_telescope_gain': best_result_tel.get('telescope_gain', 0.0) if best_result_tel else 0.0,
             'best_result_ne': best_result_ne,
             'best_result_tel': best_result_tel,
             'visibility_duration_ne': visibility_duration_ne,
@@ -882,9 +1013,11 @@ class HilalVisibilityCalculator:
                                       use_telescope: bool = True,
                                       aperture: float = 100.0,
                                       magnification: float = 50.0,
+                                      F_naked: float = 2.5,
                                       mode: str = "sunset",
                                       interval_menit: int = 2,
                                       min_moon_alt: float = 2.0,
+                                      start_delay_menit: int = 3,
                                       **telescope_kwargs) -> Dict[str, Any]:
         """
         Menjalankan seluruh algoritma perhitungan visibilitas hilal.
@@ -936,23 +1069,30 @@ class HilalVisibilityCalculator:
         luminansi_hilal_nl = self.hitung_luminansi_hilal_kastner(posisi, k_v)
 
         # Langkah 6: Hitung visibilitas naked eye
-        rasio_kontras_ne, delta_m_ne = self.hitung_visibilitas_naked_eye(
-            luminansi_hilal_nl, sky_brightness_nl
+        rasio_kontras_ne, delta_m_ne, crumey_ne = self.hitung_visibilitas_naked_eye(
+            luminansi_hilal_nl, sky_brightness_nl, posisi, F_naked=F_naked
         )
 
         # Langkah 7: Hitung visibilitas teleskop (jika diminta)
         if use_telescope:
             (luminansi_hilal_tel_nl, sky_brightness_tel_nl,
              rasio_kontras_tel, c_th_tel, delta_m_tel) = self.hitung_visibilitas_teleskop(
-                luminansi_hilal_nl, sky_brightness_nl, posisi, k_v,
+                luminansi_hilal_nl, sky_brightness_nl, posisi,
                 aperture=aperture,
                 magnification=magnification,
                 **telescope_kwargs
             )
+            # Telescope gain: keuntungan threshold teleskop vs naked eye [mag]
+            c_th_ne = crumey_ne['C_th']
+            if c_th_tel > 0 and c_th_ne > 0:
+                telescope_gain = 2.5 * math.log10(c_th_ne / c_th_tel)
+            else:
+                telescope_gain = 0.0
         else:
             luminansi_hilal_tel_nl = sky_brightness_tel_nl = 0.0
             rasio_kontras_tel = c_th_tel = delta_m_tel = 0.0
-        
+            telescope_gain = 0.0
+
         # Simpan semua hasil termasuk data posisi lengkap
         self.hasil.update({
             # Data posisi matahari
@@ -974,7 +1114,11 @@ class HilalVisibilityCalculator:
             'delta_m_ne': delta_m_ne,
             'rasio_kontras_tel': rasio_kontras_tel,
             'c_th_tel': c_th_tel,
-            'delta_m_tel': delta_m_tel
+            'delta_m_tel': delta_m_tel,
+            'telescope_gain': telescope_gain,
+            'crumey_ne_C_th': crumey_ne['C_th'],
+            'crumey_ne_regime': crumey_ne['regime'],
+            'crumey_ne_A_arcmin2': crumey_ne['A_arcmin2'],
         })
         
         # Langkah 8: Cari visibilitas optimal (jika mode = "optimal")
@@ -986,8 +1130,11 @@ class HilalVisibilityCalculator:
                 observing_location=observing_location,
                 aperture=aperture,
                 magnification=magnification,
+                F_naked=F_naked,
+                field_factor=telescope_kwargs.get('field_factor', 2.4),
                 interval_menit=interval_menit,
-                min_moon_alt=min_moon_alt
+                min_moon_alt=min_moon_alt,
+                start_delay_menit=start_delay_menit
             )
             
             self.hasil.update({
@@ -998,6 +1145,7 @@ class HilalVisibilityCalculator:
                 'optimal_time_tel': hasil_optimal['optimal_time_tel'],
                 'optimal_delta_m_tel': hasil_optimal['optimal_delta_m_tel'],
                 'optimal_moon_alt_tel': hasil_optimal['optimal_moon_alt_tel'],
+                'optimal_telescope_gain': hasil_optimal['optimal_telescope_gain'],
                 'optimal_result_ne': hasil_optimal['best_result_ne'],
                 'optimal_result_tel': hasil_optimal['best_result_tel'],
                 'visibility_duration_ne': hasil_optimal['visibility_duration_ne'],
@@ -1080,14 +1228,20 @@ class HilalVisibilityCalculator:
         if 'moon_semidiameter' in self.hasil:
             print(f"  Semidiameter Bulan    : {deg_to_dms(float(self.hasil['moon_semidiameter']))}")
         
-        # === VISIBILITAS HILAL NAKED EYE (gabungan) ===
+        # === VISIBILITAS HILAL NAKED EYE (Crumey 2014) ===
         print(f"\n{'='*22} VISIBILITAS HILAL NAKED EYE {'='*21}")
         if 'luminansi_hilal_nl' in self.hasil:
             print(f"  Luminansi Hilal       : {self.hasil['luminansi_hilal_nl']:.4e} nL")
             print(f"  Sky Brightness        : {self.hasil['sky_brightness_nl']:.4e} nL")
         if 'rasio_kontras_ne' in self.hasil:
-            print(f"  Rasio Kontras (R)     : {self.hasil['rasio_kontras_ne']:.4e}")
-            print(f"  Delta m               : {self.hasil['delta_m_ne']:.4f}")
+            print(f"  Weber Contrast (C_obj): {self.hasil['rasio_kontras_ne']:.4e}")
+            if 'crumey_ne_C_th' in self.hasil:
+                print(f"  Threshold (Crumey)    : {self.hasil['crumey_ne_C_th']:.4e}")
+            if 'crumey_ne_regime' in self.hasil:
+                print(f"  Regime                : {self.hasil['crumey_ne_regime']}")
+            if 'crumey_ne_A_arcmin2' in self.hasil:
+                print(f"  Luas Sabit            : {self.hasil['crumey_ne_A_arcmin2']:.4f} arcmin²")
+            print(f"  Visib. Margin (D_m)   : {self.hasil['delta_m_ne']:.4f}")
             status_ne = "TERLIHAT" if self.hasil['delta_m_ne'] >= 0 else "TIDAK TERLIHAT"
             print(f"  Status                : {status_ne}")
         
@@ -1116,6 +1270,9 @@ class HilalVisibilityCalculator:
             if 'c_th_tel' in self.hasil:
                 print(f"  Threshold (Crumey)    : {self.hasil['c_th_tel']:.4e}")
             print(f"  Visib. Margin (D_m)   : {self.hasil['delta_m_tel']:.4f}")
+            if 'telescope_gain' in self.hasil:
+                print(f"  Telescope Gain        : {self.hasil['telescope_gain']:+.4f} mag "
+                      f"(= 2.5 log C_th_ne/C_th_tel)")
             status_tel = "TERLIHAT" if self.hasil['delta_m_tel'] > 0 else "TIDAK TERLIHAT"
             print(f"  Status                : {status_tel}")
         
@@ -1125,6 +1282,8 @@ class HilalVisibilityCalculator:
             print(f"  Waktu Optimal         : {self.hasil['optimal_time_tel'].strftime('%H:%M:%S')}")
             print(f"  Moon Alt. Optimal     : {self.hasil['optimal_moon_alt_tel']:.2f}°")
             print(f"  Delta m Optimal       : {self.hasil['optimal_delta_m_tel']:.4f}")
+            if 'optimal_telescope_gain' in self.hasil:
+                print(f"  Telescope Gain        : {self.hasil['optimal_telescope_gain']:+.4f} mag")
             if self.hasil['visibility_duration_tel'] > 0:
                 print(f"  Durasi Visibilitas    : {self.hasil['visibility_duration_tel']} menit")
             else:
@@ -1389,11 +1548,23 @@ class HilalVisibilityCalculator:
                   f"{self.hasil['k_v']:.4f}" if 'k_v' in self.hasil else na,
                   f"{opt_ne['k_v']:.4f}" if has_opt_ne else na)
 
-        row = wcr(row, 'Rasio Kontras (R)',
+        row = wcr(row, 'Weber Contrast (C_obj)',
                   f"{self.hasil['rasio_kontras_ne']:.4e}" if 'rasio_kontras_ne' in self.hasil else na,
                   f"{opt_ne['rasio_kontras_ne']:.4e}" if has_opt_ne else na)
 
-        row = wcr(row, 'Delta m',
+        row = wcr(row, 'Threshold Crumey (C_th)',
+                  f"{self.hasil['crumey_ne_C_th']:.4e}" if 'crumey_ne_C_th' in self.hasil else na,
+                  f"{opt_ne.get('crumey_ne_C_th', 0):.4e}" if has_opt_ne and opt_ne.get('crumey_ne_C_th') is not None else na)
+
+        row = wcr(row, 'Regime',
+                  self.hasil.get('crumey_ne_regime', na),
+                  opt_ne.get('crumey_ne_regime', na) if has_opt_ne else na)
+
+        row = wcr(row, 'Luas Sabit (arcmin²)',
+                  f"{self.hasil['crumey_ne_A_arcmin2']:.4f}" if 'crumey_ne_A_arcmin2' in self.hasil else na,
+                  f"{opt_ne.get('crumey_ne_A_arcmin2', 0):.4f}" if has_opt_ne and opt_ne.get('crumey_ne_A_arcmin2') is not None else na)
+
+        row = wcr(row, 'Visib. Margin (D_m)',
                   f"{self.hasil['delta_m_ne']:.4f}" if 'delta_m_ne' in self.hasil else na,
                   f"{opt_ne['delta_m_ne']:.4f}" if has_opt_ne else na)
 
@@ -1470,6 +1641,10 @@ class HilalVisibilityCalculator:
                   f"{self.hasil['delta_m_tel']:.4f}" if 'delta_m_tel' in self.hasil else na,
                   f"{opt_tel['delta_m_tel']:.4f}" if has_opt_tel else na)
 
+        row = wcr(row, 'Telescope Gain (mag)',
+                  f"{self.hasil['telescope_gain']:+.4f}" if 'telescope_gain' in self.hasil else na,
+                  f"{opt_tel['telescope_gain']:+.4f}" if has_opt_tel and 'telescope_gain' in opt_tel else na)
+
         # Status Teleskop
         is_sunset_tel = self.hasil.get('delta_m_tel', -1) > 0
         is_opt_tel_vis = has_opt_tel and opt_tel.get('delta_m_tel', -1) > 0
@@ -1502,7 +1677,7 @@ class HilalVisibilityCalculator:
             'No', 'Waktu Lokal', 'Moon Alt (°)', 'Sun Alt (°)',
             'Elongasi (°)', 'RH (%)', 'T (°C)',
             'Sky Brightness (nL)', 'Luminansi Hilal (nL)', 'k_V',
-            'Δm Naked Eye', 'Margin Teleskop',
+            'Δm Naked Eye', 'Margin Teleskop', 'Telescope Gain (mag)',
             'Kontras NE', 'C_obj Teleskop', 'C_th Teleskop'
         ]
 
@@ -1529,6 +1704,7 @@ class HilalVisibilityCalculator:
                     round(r.get('k_v', 0), 4) if r.get('valid') else '',
                     round(r.get('delta_m_ne', 0), 4) if r.get('valid') else '',
                     round(r.get('delta_m_tel', 0), 4) if r.get('valid') else '',
+                    round(r.get('telescope_gain', 0), 4) if r.get('valid') else '',
                     f"{r.get('rasio_kontras_ne', 0):.4e}" if r.get('valid') else '',
                     f"{r.get('rasio_kontras_tel', 0):.4e}" if r.get('valid') else '',
                     f"{r.get('c_th_tel', 0):.4e}" if r.get('valid') and 'c_th_tel' in r else ''
@@ -1858,21 +2034,23 @@ def _input_koreksi_bias(bias_t: float, bias_rh: float, sumber_atmosfer: str = 'e
 
 
 def _input_parameter_teleskop():
-    """Input parameter teleskop. Return dict parameter."""
+    """Input parameter teleskop dan field factor. Return dict parameter."""
     defaults = {
         'aperture': 100.0, 'magnification': 50.0, 'central_obstruction': 0.0,
-        'transmission': 0.95, 'n_surfaces': 6, 'observer_age': 22.0, 'seeing': 3.0
+        'transmission': 0.95, 'n_surfaces': 6, 'observer_age': 22.0, 'seeing': 3.0,
+        'field_factor': 2.4, 'F_naked': 2.5
     }
 
-    print("\n--- LANGKAH 4: PARAMETER TELESKOP ---")
-    print("  Gunakan parameter teleskop default?")
+    print("\n--- LANGKAH 4: PARAMETER TELESKOP & FIELD FACTOR ---")
+    print("  Gunakan parameter default?")
     print("  (aperture=100mm, magnification=50x, obstruction=0mm,")
-    print("   transmission=0.95, n_surfaces=6, age=22.0, seeing=3.0)")
+    print("   transmission=0.95, n_surfaces=6, age=22.0, seeing=3.0,")
+    print("   field_factor_teleskop=2.4, field_factor_naked_eye=2.5)")
 
     try:
         default_tel = input("  Gunakan default? (Y/n): ").strip().lower()
         if default_tel == 'n':
-            print("\n  Masukkan parameter teleskop (kosongkan untuk default):")
+            print("\n  Masukkan parameter (kosongkan untuk default):")
             defaults['aperture'] = _get_input("  Aperture (mm) [default: 100.0]: ", 100.0)
             defaults['magnification'] = _get_input("  Magnifikasi (x) [default: 50.0]: ", 50.0)
             defaults['central_obstruction'] = _get_input("  Obstruksi sentral (mm) [default: 0.0]: ", 0.0)
@@ -1880,12 +2058,14 @@ def _input_parameter_teleskop():
             defaults['n_surfaces'] = _get_input("  Jumlah permukaan optik [default: 6]: ", 6, int)
             defaults['observer_age'] = _get_input("  Usia pengamat (tahun) [default: 22.0]: ", 22.0)
             defaults['seeing'] = _get_input("  Seeing atmosfir (arcsec) [default: 3.0]: ", 3.0)
-            print(f"  ✓ Teleskop kustom digunakan.")
+            defaults['field_factor'] = _get_input("  Field factor teleskop (Crumey F) [default: 2.4]: ", 2.4)
+            defaults['F_naked'] = _get_input("  Field factor naked eye (Crumey F) [default: 2.5]: ", 2.5)
+            print(f"  ✓ Parameter kustom digunakan.")
         else:
-            print(f"  ✓ Teleskop default digunakan.")
+            print(f"  ✓ Parameter default digunakan.")
     except Exception as e:
         print(f"  [!] Terjadi kesalahan: {e}")
-        print(f"  ✓ Teleskop default digunakan.")
+        print(f"  ✓ Parameter default digunakan.")
 
     return defaults
 
@@ -1941,8 +2121,9 @@ def main():
     # LANGKAH 3.7: Koreksi Bias
     bias_t, bias_rh = _input_koreksi_bias(bias_t, bias_rh, sumber_atmosfer)
 
-    # LANGKAH 4: Parameter Teleskop
+    # LANGKAH 4: Parameter Teleskop & Field Factor
     tel_params = _input_parameter_teleskop()
+    F_naked = tel_params.pop('F_naked')  # pisahkan, bukan parameter teleskop
 
     # JALANKAN PERHITUNGAN
     print("\n" + "=" * 70)
@@ -1972,6 +2153,7 @@ def main():
         mode=mode,
         interval_menit=2,
         min_moon_alt=2.0,
+        F_naked=F_naked,
         **tel_params
     )
 
