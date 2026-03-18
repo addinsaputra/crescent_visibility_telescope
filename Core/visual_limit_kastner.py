@@ -1,36 +1,36 @@
 import math
 
 
-def crescent_area(elongation_deg: float, r_deg: float) -> float:
+def crescent_area(phase_angle_deg: float, r_deg: float) -> float:
     """
     Menghitung luas sabit bulan.
 
     Parameter:
-    elongation_deg (float): Sudut elongasi (derajat)
+    phase_angle_deg (float): Sudut fase bulan / phase angle (derajat),
+                             dihitung langsung dari geometri 3D Skyfield.
     r_deg (float): Semidiameter bulan (derajat)
 
     Returns:
     float: Luas sabit bulan (derajat²)
 
-    Rumus: A = (0.5 * pi * r²) * [1 + cos(180° - ARCL)]
-    dimana ARCL adalah elongasi (Arc of Light)
+    Rumus: D = ½ π r² (1 + cos i)
+    dimana i adalah phase angle (sudut di Bulan antara Matahari dan Bumi).
 
     Catatan:
     - Untuk Kastner: gunakan langsung (output dalam derajat²)
     - Untuk Crumey: konversi manual ke arcmin² (A * 3600)
     """
-    elong_rad = math.radians(elongation_deg)
-    # 180° dalam radian = math.pi
-    return 0.5 * math.pi * (r_deg ** 2) * (1 + math.cos(math.pi - elong_rad))
+    i_rad = math.radians(phase_angle_deg)
+    return 0.5 * math.pi * (r_deg ** 2) * (1 + math.cos(i_rad))
 
 
-def hitung_luminansi_kastner(alpha, elongation, r, z, k=0.5):
+def hitung_luminansi_kastner(alpha, r, z, k=0.5):
     """
     Menghitung kecerahan (luminance) Hilal menggunakan model Kastner.
 
     Parameter:
-    alpha (float): Phase angle bulan (derajat)
-    elongation (float): Sudut elongasi (derajat)
+    alpha (float): Phase angle bulan (derajat), dihitung langsung dari
+                   geometri 3D Skyfield (sudut di Bulan antara Matahari dan Bumi).
     r (float): Semidiameter bulan (derajat)
     z (float): Jarak zenit / Zenith distance (derajat)
     k (float): Koefisien ekstingsi (default 0.5 untuk atmosfer bersih)
@@ -40,8 +40,6 @@ def hitung_luminansi_kastner(alpha, elongation, r, z, k=0.5):
     """
 
     # 1. Konversi input derajat ke radian untuk fungsi trigonometri
-    alpha_rad = math.radians(alpha)
-    elong_rad = math.radians(elongation)
     z_rad = math.radians(z)
 
     # 2. Persamaan (3): Magnitudo Visual (mv)
@@ -49,12 +47,12 @@ def hitung_luminansi_kastner(alpha, elongation, r, z, k=0.5):
     mv = (0.026 * alpha) + (4e-9 * (alpha**4)) - 12.73
 
     # 3. Persamaan (2): Luas Sabit Bulan (D)
-    # D = 1/2 * pi * r^2 * [1 - cos(elongation)]
-    D = crescent_area(elongation, r)
-    
+    # D = ½ π r² (1 + cos i), dimana i = phase angle
+    D = crescent_area(alpha, r)
+
     # 4. Persamaan (1): Luminansi di luar atmosfer (L*)
     # L* = (2.51 ^ (10 - mv)) / D
-    # Note: D tidak boleh nol (terjadi jika elongasi = 0)
+    # Note: D tidak boleh nol (terjadi jika phase angle = 180°)
     if D == 0:
         return 0
     L_star = (2.51**(10 - mv)) / D
@@ -74,17 +72,16 @@ def hitung_luminansi_kastner(alpha, elongation, r, z, k=0.5):
 if __name__ == "__main__":
     # --- CONTOH PENGGUNAAN ---
     # Data input
-    alpha = 171.59194444444
-    elongation = 8.3858333333333
+    alpha = 171.59194444444  # phase angle dari Skyfield (derajat)
     r = 0.2625  # derajat
     z = 86.9
 
     # Contoh 1: Menghitung luminansi Hilal (Kastner)
-    hasil = hitung_luminansi_kastner(alpha=alpha, elongation=elongation, r=r, z=z)
+    hasil = hitung_luminansi_kastner(alpha=alpha, r=r, z=z)
     print(f"Luminansi Hilal di dalam atmosfer (L): {hasil:.4f} nL")
 
     # crescent_area() output dalam derajat², konversi manual ke arcmin²
-    A_deg2 = crescent_area(elongation, r)
+    A_deg2 = crescent_area(alpha, r)
     A_arcmin2 = A_deg2 * 3600  # 1 derajat² = 3600 arcmin²
     print(f"Luas sabit bulan (A): {A_arcmin2:.4f} arcmin²")
 

@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 
 # Import modul yang diperlukan
 from visual_limit_schaefer import hitung_sky_brightness
-from visual_limit_kastner import hitung_luminansi_kastner, crescent_area
+from visual_limit_kastner import hitung_luminansi_kastner
 # Import langsung dari modul Crumey (tanpa intermediary crumey_telescope_correction.py)
 from full_rumus_crumey import (
     hilal_naked_eye_visibility,
@@ -278,6 +278,77 @@ class HilalVisibilityCalculator:
             print(f"{indent}[Bias Correction] RH: {rh_raw:.2f} → {rh:.2f}% (bias={self.bias_rh:+.1f})")
 
         return rh_raw, temperature_raw, rh, temperature, pressure
+
+    def _fetch_atmosfer_dua_titik(self,
+                                   observing_location: ObservingLocation,
+                                   waktu_utc_0: datetime,
+                                   waktu_utc_1: datetime,
+                                   verbose: bool = True
+                                   ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+        """
+        Mengambil data atmosfer pada dua titik waktu untuk interpolasi linear.
+
+        Parameters
+        ----------
+        observing_location : ObservingLocation
+        waktu_utc_0 : datetime
+            Titik waktu pertama (sunset)
+        waktu_utc_1 : datetime
+            Titik waktu kedua (sunset + 1 jam)
+
+        Returns
+        -------
+        atm_0 : (rh, temperature, pressure) pada waktu_utc_0
+        atm_1 : (rh, temperature, pressure) pada waktu_utc_1
+        """
+        if verbose:
+            print(f"  Mengambil data atmosfer pada 2 titik untuk interpolasi...")
+
+        _, _, rh_0, t_0, p_0 = self._fetch_atmosfer(
+            observing_location, waktu_utc_0, verbose=verbose
+        )
+        _, _, rh_1, t_1, p_1 = self._fetch_atmosfer(
+            observing_location, waktu_utc_1, verbose=False
+        )
+
+        if verbose:
+            w0_str = waktu_utc_0.strftime('%H:%M')
+            w1_str = waktu_utc_1.strftime('%H:%M')
+            print(f"    Titik 1 ({w0_str} UTC): RH={rh_0:.1f}%, T={t_0:.1f}°C, P={p_0:.1f} mbar")
+            print(f"    Titik 2 ({w1_str} UTC): RH={rh_1:.1f}%, T={t_1:.1f}°C, P={p_1:.1f} mbar")
+
+        return (rh_0, t_0, p_0), (rh_1, t_1, p_1)
+
+    @staticmethod
+    def _interpolasi_atmosfer(atm_0: Tuple[float, float, float],
+                               atm_1: Tuple[float, float, float],
+                               t0: datetime, t1: datetime,
+                               t: datetime) -> Tuple[float, float, float]:
+        """
+        Interpolasi linear data atmosfer antara dua titik waktu.
+
+        Parameters
+        ----------
+        atm_0 : (rh, temperature, pressure) pada t0
+        atm_1 : (rh, temperature, pressure) pada t1
+        t0, t1 : datetime — waktu referensi
+        t : datetime — waktu target
+
+        Returns
+        -------
+        (rh, temperature, pressure) hasil interpolasi
+        """
+        total = (t1 - t0).total_seconds()
+        if total <= 0:
+            return atm_0
+
+        frac = max(0.0, min(1.0, (t - t0).total_seconds() / total))
+
+        rh = atm_0[0] + frac * (atm_1[0] - atm_0[0])
+        temperature = atm_0[1] + frac * (atm_1[1] - atm_0[1])
+        pressure = atm_0[2] + frac * (atm_1[2] - atm_0[2])
+
+        return rh, temperature, pressure
 
     def hitung_ijtima(self) -> Tuple[datetime, datetime]:
         """
@@ -581,7 +652,6 @@ class HilalVisibilityCalculator:
         
         luminansi_hilal_nl = hitung_luminansi_kastner(
             alpha=posisi['phase_angle'],
-            elongation=posisi['elongation'],
             r=float(posisi['moon_semidiameter']),
             z=zenith_distance,
             k=k_v
@@ -631,7 +701,7 @@ class HilalVisibilityCalculator:
         result = hilal_naked_eye_visibility(
             L_hilal_nL=luminansi_hilal_nl,
             B_sky_nL=sky_brightness_nl,
-            elongation_deg=posisi['elongation'],
+            phase_angle_deg=posisi['phase_angle'],
             moon_sd_deg=float(posisi['moon_semidiameter']),
             F=F_naked,
             mode='auto',  # otomatis pilih scotopic/combined berdasarkan B
@@ -723,7 +793,7 @@ class HilalVisibilityCalculator:
 
         # ── Langkah 1: Luas sabit ─────────────────────────────────────────
         A_arcmin2 = crescent_area_arcmin2(
-            posisi['elongation'], float(posisi['moon_semidiameter'])
+            posisi['phase_angle'], float(posisi['moon_semidiameter'])
         )
         A_sr = arcmin2_to_sr(A_arcmin2)
 
@@ -805,18 +875,26 @@ class HilalVisibilityCalculator:
                                        aperture: float = 66.0,
                                        magnification: float = 50.0,
                                        F_naked: float = 2.5,
-                                       field_factor: float = 2.4) -> Dict[str, Any]:
+                                       field_factor: float = 2.4,
+                                       cached_atm: Optional[Tuple[float, float, float]] = None
+                                       ) -> Dict[str, Any]:
         """
         Menghitung visibilitas hilal pada waktu tertentu.
-        RH dan T diinterpolasi untuk waktu spesifik ini.
-        """
-        # Konversi waktu lokal ke UTC untuk API call
-        waktu_utc = waktu_local.astimezone(timezone.utc)
 
-        # LANGKAH 1: Ambil RH, T, P yang diinterpolasi untuk waktu ini
-        _, _, rh, temperature, pressure = self._fetch_atmosfer(
-            observing_location, waktu_utc, verbose=False
-        )
+        Parameters
+        ----------
+        cached_atm : (rh, temperature, pressure) atau None
+            Jika diberikan, gunakan data atmosfer ini (dari interpolasi)
+            tanpa melakukan API call. Jika None, fetch via API.
+        """
+        if cached_atm is not None:
+            rh, temperature, pressure = cached_atm
+        else:
+            # Konversi waktu lokal ke UTC untuk API call
+            waktu_utc = waktu_local.astimezone(timezone.utc)
+            _, _, rh, temperature, pressure = self._fetch_atmosfer(
+                observing_location, waktu_utc, verbose=False
+            )
         
         # LANGKAH 2: Hitung posisi matahari dan bulan dengan T/P dinamis
         posisi = self.hitung_posisi_matahari_bulan(
@@ -895,44 +973,92 @@ class HilalVisibilityCalculator:
                                   magnification: float = 50.0,
                                   F_naked: float = 2.5,
                                   field_factor: float = 2.4,
-                                  interval_menit: int = 2,
+                                  interval_menit: int = 1,
                                   min_moon_alt: float = 2.0,
-                                  start_delay_menit: int = 3) -> Dict[str, Any]:
+                                  start_delay_menit: int = 1) -> Dict[str, Any]:
         """
         Loop dari sunset hingga bulan mendekati horizon untuk mencari
-        waktu optimal (delta_m maksimum). RH dan T diinterpolasi per timestep.
+        waktu optimal (delta_m maksimum).
+
+        Perbaikan v2:
+        - Atmosfer di-fetch 2 titik (sunset & +1 jam), lalu diinterpolasi linear
+        - Default interval 1 menit (sebelumnya 2 menit)
+        - Refinement ±2 menit di sekitar puncak dengan step 15 detik
+        - Track window visibilitas kontinu (start, end, durasi terpanjang)
+        - Start delay 1 menit agar teleskop bisa mendeteksi lebih awal
 
         Parameters
         ----------
+        interval_menit : int
+            Interval antar timestep dalam menit (default 1)
+        min_moon_alt : float
+            Altitude bulan minimum (derajat) sebelum loop berhenti (default 2.0)
         start_delay_menit : int
-            Delay dalam menit setelah sunset sebelum loop dimulai (default 3).
-            Saat sunset langit masih sangat terang sehingga timestep awal
-            selalu menghasilkan delta_m sangat negatif dan tidak informatif.
+            Delay setelah sunset sebelum loop dimulai (default 1)
         """
         print(f"\n  Mencari visibilitas optimal (interval: {interval_menit} menit, "
               f"start delay: {start_delay_menit} menit)...")
-        print(f"  RH dan T diinterpolasi per timestep")
 
-        # Inisialisasi variabel tracking
+        # ── Fetch atmosfer 2 titik untuk interpolasi ──────────────────────
+        sunset_utc = convert_localtime_to_utc(self.timezone_str, local_datetime=sunset_local)
+        if sunset_utc.tzinfo is None:
+            sunset_utc = sunset_utc.replace(tzinfo=timezone.utc)
+        sunset_utc_plus1h = sunset_utc + timedelta(hours=1)
+
+        atm_0, atm_1 = self._fetch_atmosfer_dua_titik(
+            observing_location, sunset_utc, sunset_utc_plus1h, verbose=True
+        )
+        t0_utc = sunset_utc
+        t1_utc = sunset_utc_plus1h
+        print(f"  Atmosfer diinterpolasi linear antara sunset dan +1 jam")
+
+        # ── Inisialisasi tracking ─────────────────────────────────────────
         best_result_ne = None
         best_result_tel = None
         best_delta_m_ne = -99.0
         best_delta_m_tel = -99.0
 
+        # Tracking visibility window: first & last visible
         visibility_start_ne = None
+        visibility_end_ne = None
         visibility_start_tel = None
-        visible_count_ne = 0
-        visible_count_tel = 0
+        visibility_end_tel = None
+
+        # Tracking window kontinu terpanjang (NE)
+        current_streak_ne = 0
+        longest_streak_ne = 0
+        streak_start_ne = None
+        last_visible_in_streak_ne = None
+        best_window_start_ne = None
+        best_window_end_ne = None
+
+        # Tracking window kontinu terpanjang (Teleskop)
+        current_streak_tel = 0
+        longest_streak_tel = 0
+        streak_start_tel = None
+        last_visible_in_streak_tel = None
+        best_window_start_tel = None
+        best_window_end_tel = None
 
         all_results = []
         current_time = sunset_local + timedelta(minutes=start_delay_menit)
         step_count = 0
         max_steps = 120
 
+        # ── Loop utama (kasar) ────────────────────────────────────────────
         while step_count < max_steps:
+            # Interpolasi atmosfer untuk waktu ini
+            waktu_utc = convert_localtime_to_utc(self.timezone_str, local_datetime=current_time)
+            if waktu_utc.tzinfo is None:
+                waktu_utc = waktu_utc.replace(tzinfo=timezone.utc)
+            rh, temperature, pressure = self._interpolasi_atmosfer(
+                atm_0, atm_1, t0_utc, t1_utc, waktu_utc
+            )
+
             result = self.hitung_visibilitas_pada_waktu(
                 current_time, observing_location, aperture, magnification,
-                F_naked=F_naked, field_factor=field_factor
+                F_naked=F_naked, field_factor=field_factor,
+                cached_atm=(rh, temperature, pressure)
             )
 
             all_results.append(result)
@@ -941,24 +1067,48 @@ class HilalVisibilityCalculator:
                 print(f"    Berhenti: moon_alt = {result['moon_alt']:.2f}° (< {min_moon_alt}°)")
                 break
 
+            # Track best NE
             if result['delta_m_ne'] > best_delta_m_ne:
                 best_delta_m_ne = result['delta_m_ne']
                 best_result_ne = result
 
+            # Track best telescope
             if result['delta_m_tel'] > best_delta_m_tel:
                 best_delta_m_tel = result['delta_m_tel']
                 best_result_tel = result
 
-            # Track visibilitas: hitung jumlah timestep yang benar-benar visible
+            # ── Track NE visibility window ────────────────────────────────
             if result['delta_m_ne'] > 0:
-                visible_count_ne += 1
                 if visibility_start_ne is None:
                     visibility_start_ne = current_time
+                visibility_end_ne = current_time
+                # Track streak kontinu
+                if current_streak_ne == 0:
+                    streak_start_ne = current_time
+                current_streak_ne += 1
+                last_visible_in_streak_ne = current_time
+            else:
+                if current_streak_ne > longest_streak_ne:
+                    longest_streak_ne = current_streak_ne
+                    best_window_start_ne = streak_start_ne
+                    best_window_end_ne = last_visible_in_streak_ne
+                current_streak_ne = 0
 
+            # ── Track telescope visibility window ─────────────────────────
             if result['delta_m_tel'] > 0:
-                visible_count_tel += 1
                 if visibility_start_tel is None:
                     visibility_start_tel = current_time
+                visibility_end_tel = current_time
+                if current_streak_tel == 0:
+                    streak_start_tel = current_time
+                current_streak_tel += 1
+                last_visible_in_streak_tel = current_time
+            else:
+                if current_streak_tel > longest_streak_tel:
+                    longest_streak_tel = current_streak_tel
+                    best_window_start_tel = streak_start_tel
+                    best_window_end_tel = last_visible_in_streak_tel
+                current_streak_tel = 0
 
             # Tampilkan progress
             waktu_str = result['waktu_local'].strftime('%H:%M:%S')
@@ -975,11 +1125,66 @@ class HilalVisibilityCalculator:
             current_time += timedelta(minutes=interval_menit)
             step_count += 1
 
-        print(f"  Selesai: {len(all_results)} timestep dihitung")
+        # Finalisasi streak terakhir (jika loop berakhir saat masih visible)
+        if current_streak_ne > longest_streak_ne:
+            longest_streak_ne = current_streak_ne
+            best_window_start_ne = streak_start_ne
+            best_window_end_ne = last_visible_in_streak_ne
+        if current_streak_tel > longest_streak_tel:
+            longest_streak_tel = current_streak_tel
+            best_window_start_tel = streak_start_tel
+            best_window_end_tel = last_visible_in_streak_tel
 
-        # Durasi = jumlah timestep visible × interval (akurat meski ada gap)
-        visibility_duration_ne = visible_count_ne * interval_menit
-        visibility_duration_tel = visible_count_tel * interval_menit
+        print(f"  Selesai loop kasar: {len(all_results)} timestep dihitung")
+
+        # ── Refinement: presisi tinggi di sekitar puncak ──────────────────
+        if best_result_ne or best_result_tel:
+            peak_times = []
+            if best_result_ne:
+                peak_times.append(best_result_ne['waktu_local'])
+            if best_result_tel:
+                peak_times.append(best_result_tel['waktu_local'])
+
+            refine_start = min(peak_times) - timedelta(minutes=2)
+            refine_end = max(peak_times) + timedelta(minutes=2)
+            refine_step = timedelta(seconds=15)
+
+            print(f"\n  Refinement: {refine_start.strftime('%H:%M:%S')} - "
+                  f"{refine_end.strftime('%H:%M:%S')} (per 15 detik)")
+
+            t_refine = refine_start
+            while t_refine <= refine_end:
+                waktu_utc_r = convert_localtime_to_utc(
+                    self.timezone_str, local_datetime=t_refine
+                )
+                if waktu_utc_r.tzinfo is None:
+                    waktu_utc_r = waktu_utc_r.replace(tzinfo=timezone.utc)
+                rh_r, temp_r, pres_r = self._interpolasi_atmosfer(
+                    atm_0, atm_1, t0_utc, t1_utc, waktu_utc_r
+                )
+                result_r = self.hitung_visibilitas_pada_waktu(
+                    t_refine, observing_location, aperture, magnification,
+                    F_naked=F_naked, field_factor=field_factor,
+                    cached_atm=(rh_r, temp_r, pres_r)
+                )
+                if result_r['valid']:
+                    if result_r['delta_m_ne'] > best_delta_m_ne:
+                        best_delta_m_ne = result_r['delta_m_ne']
+                        best_result_ne = result_r
+                        print(f"    ^ NE peak refined: "
+                              f"{t_refine.strftime('%H:%M:%S')} "
+                              f"dm={result_r['delta_m_ne']:+.4f}")
+                    if result_r['delta_m_tel'] > best_delta_m_tel:
+                        best_delta_m_tel = result_r['delta_m_tel']
+                        best_result_tel = result_r
+                        print(f"    ^ Tel peak refined: "
+                              f"{t_refine.strftime('%H:%M:%S')} "
+                              f"dm={result_r['delta_m_tel']:+.4f}")
+                t_refine += refine_step
+
+        # ── Durasi window kontinu terpanjang ──────────────────────────────
+        visibility_duration_ne = longest_streak_ne * interval_menit
+        visibility_duration_tel = longest_streak_tel * interval_menit
 
         return {
             'optimal_time_ne': best_result_ne['waktu_local'] if best_result_ne else None,
@@ -995,6 +1200,12 @@ class HilalVisibilityCalculator:
             'visibility_duration_tel': visibility_duration_tel,
             'visibility_start_ne': visibility_start_ne,
             'visibility_start_tel': visibility_start_tel,
+            'visibility_end_ne': visibility_end_ne,
+            'visibility_end_tel': visibility_end_tel,
+            'best_window_start_ne': best_window_start_ne,
+            'best_window_end_ne': best_window_end_ne,
+            'best_window_start_tel': best_window_start_tel,
+            'best_window_end_tel': best_window_end_tel,
             'total_timesteps': len(all_results),
             'all_results': all_results
         }
@@ -1007,9 +1218,9 @@ class HilalVisibilityCalculator:
                                       magnification: float = 50.0,
                                       F_naked: float = 2.5,
                                       mode: str = "sunset",
-                                      interval_menit: int = 2,
+                                      interval_menit: int = 1,
                                       min_moon_alt: float = 2.0,
-                                      start_delay_menit: int = 3,
+                                      start_delay_menit: int = 1,
                                       **telescope_kwargs) -> Dict[str, Any]:
         """
         Menjalankan seluruh algoritma perhitungan visibilitas hilal.
@@ -1144,6 +1355,12 @@ class HilalVisibilityCalculator:
                 'visibility_duration_tel': hasil_optimal['visibility_duration_tel'],
                 'visibility_start_ne': hasil_optimal['visibility_start_ne'],
                 'visibility_start_tel': hasil_optimal['visibility_start_tel'],
+                'visibility_end_ne': hasil_optimal['visibility_end_ne'],
+                'visibility_end_tel': hasil_optimal['visibility_end_tel'],
+                'best_window_start_ne': hasil_optimal['best_window_start_ne'],
+                'best_window_end_ne': hasil_optimal['best_window_end_ne'],
+                'best_window_start_tel': hasil_optimal['best_window_start_tel'],
+                'best_window_end_tel': hasil_optimal['best_window_end_tel'],
                 'total_timesteps': hasil_optimal['total_timesteps'],
                 'all_timestep_results': hasil_optimal['all_results']
             })
@@ -1244,7 +1461,11 @@ class HilalVisibilityCalculator:
             print(f"  Moon Alt. Optimal     : {self.hasil['optimal_moon_alt_ne']:.2f}°")
             print(f"  Delta m Optimal       : {self.hasil['optimal_delta_m_ne']:.4f}")
             if self.hasil['visibility_duration_ne'] > 0:
-                print(f"  Durasi Visibilitas    : {self.hasil['visibility_duration_ne']} menit")
+                print(f"  Durasi Visibilitas    : {self.hasil['visibility_duration_ne']} menit (window kontinu terpanjang)")
+                ws_ne = self.hasil.get('best_window_start_ne')
+                we_ne = self.hasil.get('best_window_end_ne')
+                if ws_ne and we_ne:
+                    print(f"  Window Visibilitas    : {ws_ne.strftime('%H:%M:%S')} - {we_ne.strftime('%H:%M:%S')}")
             else:
                 print(f"  Durasi Visibilitas    : 0 menit (tidak pernah delta_m > 0)")
         
@@ -1277,7 +1498,11 @@ class HilalVisibilityCalculator:
             if 'optimal_telescope_gain' in self.hasil:
                 print(f"  Telescope Gain        : {self.hasil['optimal_telescope_gain']:+.4f} mag")
             if self.hasil['visibility_duration_tel'] > 0:
-                print(f"  Durasi Visibilitas    : {self.hasil['visibility_duration_tel']} menit")
+                print(f"  Durasi Visibilitas    : {self.hasil['visibility_duration_tel']} menit (window kontinu terpanjang)")
+                ws_tel = self.hasil.get('best_window_start_tel')
+                we_tel = self.hasil.get('best_window_end_tel')
+                if ws_tel and we_tel:
+                    print(f"  Window Visibilitas    : {ws_tel.strftime('%H:%M:%S')} - {we_tel.strftime('%H:%M:%S')}")
             else:
                 print(f"  Durasi Visibilitas    : 0 menit (tidak pernah delta_m > 0)")
         
@@ -1573,6 +1798,14 @@ class HilalVisibilityCalculator:
         if is_optimal:
             dur_ne = self.hasil.get('visibility_duration_ne', 0)
             row = wcr(row, 'Durasi Visibilitas (menit)', na, str(dur_ne))
+            # Window visibilitas kontinu terpanjang
+            ws_ne = self.hasil.get('best_window_start_ne')
+            we_ne = self.hasil.get('best_window_end_ne')
+            if ws_ne and we_ne:
+                window_str = f"{ws_ne.strftime('%H:%M:%S')} - {we_ne.strftime('%H:%M:%S')}"
+            else:
+                window_str = '-'
+            row = wcr(row, 'Window Visibilitas', na, window_str)
 
         # Interpretasi keseluruhan
         overall_ne = is_sunset_ne or is_opt_ne_vis
@@ -1650,6 +1883,14 @@ class HilalVisibilityCalculator:
         if is_optimal:
             dur_tel = self.hasil.get('visibility_duration_tel', 0)
             row = wcr(row, 'Durasi Visibilitas (menit)', na, str(dur_tel))
+            # Window visibilitas kontinu terpanjang
+            ws_tel = self.hasil.get('best_window_start_tel')
+            we_tel = self.hasil.get('best_window_end_tel')
+            if ws_tel and we_tel:
+                window_str_tel = f"{ws_tel.strftime('%H:%M:%S')} - {we_tel.strftime('%H:%M:%S')}"
+            else:
+                window_str_tel = '-'
+            row = wcr(row, 'Window Visibilitas', na, window_str_tel)
             row = wcr(row, 'Total Timesteps', na, str(self.hasil.get('total_timesteps', 0)))
 
         # Interpretasi keseluruhan
@@ -2140,7 +2381,6 @@ def main():
     hasil = calculator.jalankan_perhitungan_lengkap(
         use_telescope=True,
         mode=mode,
-        interval_menit=2,
         min_moon_alt=2.0,
         F_naked=F_naked,
         **tel_params

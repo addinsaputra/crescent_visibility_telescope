@@ -814,34 +814,36 @@ def is_visible(Lt_cdm2: float, B_cdm2: float, A_sr: float,
 # BAGIAN 10: LUAS SABIT HILAL
 # ═══════════════════════════════════════════════════════════════════════════
 
-def crescent_area_deg2(elongation_deg: float, sd_deg: float) -> float:
+def crescent_area_deg2(phase_angle_deg: float, sd_deg: float) -> float:
     """Luas sabit hilal [derajat²].
 
-    A = 0.5 × π × r² × (1 − cos(elong))
+    D = ½ π r² (1 + cos i)
+    dimana i adalah phase angle (sudut di Bulan antara Matahari dan Bumi),
+    dihitung langsung dari geometri 3D Skyfield.
 
     Parameters
     ----------
-    elongation_deg : float   Elongasi bulan dari matahari [derajat]
-    sd_deg         : float   Semidiameter bulan [derajat], tipikal ~0.25°
+    phase_angle_deg : float   Phase angle bulan [derajat], dari Skyfield
+    sd_deg          : float   Semidiameter bulan [derajat], tipikal ~0.25°
 
     Returns
     -------
     float : luas sabit [derajat²]
     """
-    if elongation_deg <= 0 or sd_deg <= 0:
+    if phase_angle_deg <= 0 or sd_deg <= 0:
         return 0.0
-    elong_rad = math.radians(elongation_deg)
-    return 0.5 * math.pi * sd_deg**2 * (1.0 - math.cos(elong_rad))
+    i_rad = math.radians(phase_angle_deg)
+    return 0.5 * math.pi * sd_deg**2 * (1.0 + math.cos(i_rad))
 
 
-def crescent_area_arcmin2(elongation_deg: float, sd_deg: float) -> float:
+def crescent_area_arcmin2(phase_angle_deg: float, sd_deg: float) -> float:
     """Luas sabit hilal [arcmin²]."""
-    return crescent_area_deg2(elongation_deg, sd_deg) * 3600.0
+    return crescent_area_deg2(phase_angle_deg, sd_deg) * 3600.0
 
 
-def crescent_area_sr(elongation_deg: float, sd_deg: float) -> float:
+def crescent_area_sr(phase_angle_deg: float, sd_deg: float) -> float:
     """Luas sabit hilal [steradian]."""
-    return arcmin2_to_sr(crescent_area_arcmin2(elongation_deg, sd_deg))
+    return arcmin2_to_sr(crescent_area_arcmin2(phase_angle_deg, sd_deg))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -851,7 +853,7 @@ def crescent_area_sr(elongation_deg: float, sd_deg: float) -> float:
 def hilal_naked_eye_visibility(
         L_hilal_nL: float,
         B_sky_nL: float,
-        elongation_deg: float,
+        phase_angle_deg: float,
         moon_sd_deg: float,
         F: float = 2.5,
         mode: str = 'auto'
@@ -861,7 +863,7 @@ def hilal_naked_eye_visibility(
 
     Pipeline:
       1. Konversi nL → cd/m² (baik L_hilal maupun B_sky)
-      2. Hitung luas sabit [sr] dari elongasi dan semidiameter
+      2. Hitung luas sabit [sr] dari phase angle dan semidiameter
       3. Hitung Weber contrast: C_obj = (L - B) / B
       4. Hitung Crumey threshold: C_th = contrast_threshold(A, B, F)
       5. Bandingkan: visible jika C_obj > C_th
@@ -872,8 +874,8 @@ def hilal_naked_eye_visibility(
         Luminansi permukaan hilal [nanoLambert]
     B_sky_nL : float
         Kecerahan langit di posisi hilal [nanoLambert]
-    elongation_deg : float
-        Elongasi toposentrik bulan dari matahari [derajat]
+    phase_angle_deg : float
+        Phase angle bulan [derajat], dihitung langsung dari geometri 3D Skyfield
     moon_sd_deg : float
         Semidiameter bulan [derajat], tipikal ~0.25°
     F : float
@@ -910,7 +912,7 @@ def hilal_naked_eye_visibility(
         }
 
     # Langkah 2: Luas sabit
-    A_arcmin2 = crescent_area_arcmin2(elongation_deg, moon_sd_deg)
+    A_arcmin2 = crescent_area_arcmin2(phase_angle_deg, moon_sd_deg)
     A_sr = arcmin2_to_sr(A_arcmin2)
 
     if A_sr <= 0:
