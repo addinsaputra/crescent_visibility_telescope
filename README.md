@@ -85,6 +85,9 @@ pip install retry-requests>=2.0.0
 
 # Timezone handling
 pip install pytz>=2021.1
+
+# Visualization
+pip install matplotlib>=3.5.0
 ```
 
 ### Files Required
@@ -124,16 +127,16 @@ Core/
 ├── core_crescent_visibility.py      # Program utama (unified, semua sumber atmosfer)
 ├── visual_limit_schaefer.py         # Sky brightness & koefisien ekstingsi (model Schaefer)
 ├── visual_limit_kastner.py          # Luminansi hilal & delta m (model Kastner)
-├── crumey.py                        # Fungsi dasar model Crumey (contrast threshold)
-├── crumey_telescope_correction.py   # Integrasi model Schaefer-Crumey untuk teleskop
-├── telescope_limit.py               # Ambang batas visibilitas hilal teleskop
+├── full_rumus_crumey.py             # Implementasi lengkap model Crumey (2014) — contrast threshold
+├── crumey_validation.py             # Pengujian & validasi implementasi Crumey vs paper
+├── telescope_limit.py               # Ambang batas visibilitas hilal teleskop (Schaefer 1990)
 ├── atmosfer_era5.py                 # API Open-Meteo ERA5 (data reanalisis 1940-sekarang)
 ├── atmosfer_merra2.py               # API NASA POWER MERRA-2 (data reanalisis 1981-sekarang)
 ├── atmosfer_bmkg.py                 # API BMKG (prakiraan cuaca 3 hari ke depan)
 ├── data_hisab.py                    # Perhitungan astronomi (ijtima, posisi matahari/bulan)
 ├── daftar_lokasi.py                 # Database lokasi pengamatan
 ├── de440s.bsp                       # Ephemeris JPL (~32MB)
-└── output/                          # Direktori output file Excel
+└── output/                          # Direktori output file Excel & grafik PNG
 ```
 
 ---
@@ -171,6 +174,7 @@ flowchart TB
         E1["dm >= 0: TERLIHAT"]
         E2["dm < 0: TIDAK TERLIHAT"]
         E3[Export Excel]
+        E4["Grafik Visibility Margin (PNG)"]
     end
 
     A1 & A2 & A3 --> B1 --> B2 --> B3
@@ -178,7 +182,7 @@ flowchart TB
     C3 --> D1 & D2
     D1 & D2 --> D3
     D1 & D2 --> D4
-    D3 & D4 --> E1 & E2 --> E3
+    D3 & D4 --> E1 & E2 --> E3 & E4
 ```
 
 ---
@@ -300,6 +304,7 @@ Program akan memandu pengguna melalui langkah-langkah:
 5. Konfigurasi koreksi bias (opsional)
 6. Konfigurasi parameter teleskop (opsional)
 7. Simpan hasil ke Excel (opsional)
+8. Simpan grafik visibility margin ke PNG (opsional, hanya mode optimal)
 
 ### 12.2 Penggunaan sebagai Library
 
@@ -328,6 +333,9 @@ hasil = calc.jalankan_perhitungan_lengkap(
 
 # Simpan ke Excel
 calc.simpan_ke_excel("output/hasil_ramadhan_1444.xlsx")
+
+# Simpan grafik visibility margin (hanya mode optimal)
+calc.plot_visibility_margin(save_path="output/grafik_ramadhan_1444.png")
 ```
 
 ### 12.3 Parameter Input Manual Atmosfer
@@ -394,7 +402,17 @@ HASIL PERHITUNGAN VISIBILITAS HILAL
   Status                : TERLIHAT
 ```
 
-### 13.2 Excel Output
+### 13.2 Grafik Visibility Margin (Mode Optimal)
+
+Pada mode optimal, program dapat menghasilkan grafik PNG yang menampilkan:
+- **Garis biru**: Visibility margin naked eye (Dm NE) per timestep
+- **Garis merah**: Visibility margin teleskop (Dm Tel) per timestep
+- **Garis hijau putus-putus**: Threshold Dm = 0
+- **Area terisi**: Zona di mana Dm > 0 (terlihat)
+
+Sumbu X menunjukkan timestep (menit setelah sunset), sumbu Y menunjukkan visibility margin dalam magnitudo.
+
+### 13.3 Excel Output
 
 File Excel berisi 3 worksheet:
 - **Ringkasan**: Seluruh data summary (lokasi, waktu, atmosfer, posisi, visibilitas)
