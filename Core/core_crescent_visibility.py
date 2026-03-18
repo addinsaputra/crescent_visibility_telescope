@@ -8,7 +8,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 
 # Import modul yang diperlukan
-from visual_limit_schaefer import visual_limit
+from visual_limit_schaefer import hitung_sky_brightness
 from visual_limit_kastner import hitung_luminansi_kastner, crescent_area
 # Import langsung dari modul Crumey (tanpa intermediary crumey_telescope_correction.py)
 from full_rumus_crumey import (
@@ -169,11 +169,9 @@ class HilalVisibilityCalculator:
         # Setup lokasi untuk perhitungan astronomis
         self.location = set_location(lintang, bujur, elevasi)
         
-        # Nilai statis sesuai spesifikasi
-        self.ALTMOON_STATIS = -90.0  # Dikunci di -90 derajat
-        self.AZIMOON_STATIS = 180.0  # Dikunci di 180 derajat
-        self.SNELLEN_RATIO = 1.0     # Dikunci di 1
-        self.PHASE_MOON = 0          # Dikunci di 0 (new moon)
+        # Catatan: parameter moonlight (ALTMOON, AZIMOON, PHASE_MOON, SNELLEN)
+        # telah dihapus karena modul Schaefer sudah diadaptasi khusus untuk
+        # visibilitas hilal (Bulan = objek pengamatan, bukan sumber background)
         
         # Hasil perhitungan akan disimpan di sini
         self.hasil: Dict[str, Any] = {}
@@ -532,25 +530,19 @@ class HilalVisibilityCalculator:
         """
         # Hitung selisih azimuth sun-moon
         azisun = abs(posisi['sun_az'] - posisi['moon_az'])
-        sun_alt_safe = posisi['sun_alt']
 
         result = {}
         try:
-            result = visual_limit(
+            result = hitung_sky_brightness(
                 month=self.hasil['tanggal_pengamatan'].month,
                 year=self.hasil['tanggal_pengamatan'].year,
-                phase_angle=self.PHASE_MOON,
-                altmoon=self.ALTMOON_STATIS,
-                azimoon=self.AZIMOON_STATIS,
-                altsun=sun_alt_safe,
+                altsun=posisi['sun_alt'],
                 azisun=azisun,
                 humidity=rh,
                 temperature=temperature,
                 latitude=self.lintang,
-                altitude=self.elevasi,
-                snellen_ratio=self.SNELLEN_RATIO,
-                altstar=max(posisi['moon_alt'], 0.0),
-                goal_magnitude=99
+                elevation=self.elevasi,
+                alt_objek=max(posisi['moon_alt'], 0.0),
             )
 
             sky_brightness_nl = float(result.get("sky_brightness", 0.0))
@@ -1748,10 +1740,7 @@ class HilalVisibilityCalculator:
             ('Sumber Data Atmosfer', self.SUMBER_ATMOSFER_LABEL.get(self.sumber_atmosfer, self.sumber_atmosfer)),
             ('Mode Perhitungan', self.hasil.get('mode', 'sunset')),
             ('Tanggal Eksekusi', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-            ('Parameter ALTMOON_STATIS', str(self.ALTMOON_STATIS)),
-            ('Parameter AZIMOON_STATIS', str(self.AZIMOON_STATIS)),
-            ('Parameter SNELLEN_RATIO', str(self.SNELLEN_RATIO)),
-            ('Parameter PHASE_MOON', str(self.PHASE_MOON)),
+            ('Catatan Schaefer', 'Moonlight excluded (Bulan = objek pengamatan)'),
         ]
 
         for col_idx, header in enumerate(['Parameter', 'Nilai'], 1):
