@@ -1517,6 +1517,127 @@ class HilalVisibilityCalculator:
         
         print("\n" + "=" * 70)
 
+    def plot_visibility_margin(self, save_path: Optional[str] = None) -> bool:
+        """
+        Plot grafik visibilitas margin (naked eye & teleskop) vs timestep.
+
+        Sumbu X: nomor timestep (interval label 1)
+        Sumbu Y: visibility margin / delta_m (interval label 5)
+
+        Parameters
+        ----------
+        save_path : str or None
+            Path file untuk menyimpan gambar. Jika None, hanya tampilkan.
+
+        Returns
+        -------
+        bool
+            True jika plot berhasil dibuat, False jika tidak ada data.
+        """
+        all_results = self.hasil.get('all_timestep_results', [])
+        if not all_results:
+            print("  [!] Tidak ada data timestep. Plot hanya tersedia pada mode optimal.")
+            return False
+
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # non-interactive backend
+            import matplotlib.pyplot as plt
+            import matplotlib.ticker as ticker
+        except ImportError:
+            print("  [!] matplotlib belum terinstall. Jalankan: pip install matplotlib")
+            return False
+
+        # Kumpulkan data valid
+        timesteps = []
+        dm_ne_list = []
+        dm_tel_list = []
+        waktu_labels = []
+        idx = 0
+        for r in all_results:
+            if not r.get('valid'):
+                continue
+            timesteps.append(idx)
+            dm_ne_list.append(r['delta_m_ne'])
+            dm_tel_list.append(r['delta_m_tel'])
+            waktu_labels.append(r['waktu_local'].strftime('%H:%M'))
+            idx += 1
+
+        if not timesteps:
+            print("  [!] Tidak ada data valid untuk diplot.")
+            return False
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Plot kedua garis
+        ax.plot(timesteps, dm_ne_list, color='#2196F3', linewidth=2,
+                marker='o', markersize=4, label='Margin Naked Eye (Δm NE)')
+        ax.plot(timesteps, dm_tel_list, color='#F44336', linewidth=2,
+                marker='s', markersize=4, label='Margin Teleskop (Δm Tel)')
+
+        # Garis threshold delta_m = 0
+        ax.axhline(y=0, color='#4CAF50', linewidth=1.5, linestyle='--',
+                   label='Threshold (Δm = 0)', alpha=0.8)
+
+        # Fill area di atas threshold
+        ax.fill_between(timesteps, dm_tel_list, 0,
+                        where=[v > 0 for v in dm_tel_list],
+                        alpha=0.10, color='#F44336')
+        ax.fill_between(timesteps, dm_ne_list, 0,
+                        where=[v > 0 for v in dm_ne_list],
+                        alpha=0.10, color='#2196F3')
+
+        # Konfigurasi sumbu X — interval label 1, mulai tepat dari 0
+        ax.set_xlabel('Timestep (menit setelah sunset)', fontsize=12, fontweight='bold')
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+        ax.set_xlim(0, max(timesteps))
+
+        # Konfigurasi sumbu Y — interval label 5, simetris terhadap 0
+        ax.set_ylabel('Visibility Margin (Δm) [mag]', fontsize=12, fontweight='bold')
+        ax.yaxis.set_major_locator(ticker.MultipleLocator(5))
+        ax.yaxis.set_minor_locator(ticker.MultipleLocator(1))
+
+        # Paksa sumbu Y simetris agar Δm = 0 selalu di tengah
+        # Default: -20 s/d +20. Jika data melebihi 20, perluas ke kelipatan 5.
+        all_dm = dm_ne_list + dm_tel_list
+        y_abs_max = max(abs(min(all_dm)), abs(max(all_dm)))
+        y_limit = max(20, math.ceil(y_abs_max / 5) * 5)
+        ax.set_ylim(-y_limit, y_limit)
+
+        # Format label sumbu Y: ...-10 -5 0 +5 +10...
+        def y_formatter(val, pos):
+            if val == 0:
+                return '0'
+            return f'{val:+.0f}'
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(y_formatter))
+
+        # Judul dan informasi
+        nama = self.nama_tempat
+        bln = self.bulan_hijri
+        thn = self.tahun_hijri
+        sunset_str = self.hasil.get('sunset_local', '')
+        if hasattr(sunset_str, 'strftime'):
+            sunset_str = sunset_str.strftime('%Y-%m-%d %H:%M:%S')
+        ax.set_title(
+            f'Visibilitas Hilal — {nama}\n'
+            f'Bulan {bln}/{thn} H | Sunset: {sunset_str}',
+            fontsize=14, fontweight='bold', pad=15
+        )
+
+        ax.legend(loc='best', fontsize=10, framealpha=0.9)
+        ax.grid(True, which='major', linestyle='-', alpha=0.3)
+        ax.grid(True, which='minor', linestyle=':', alpha=0.15)
+
+        plt.tight_layout()
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"  [✓] Grafik disimpan: {save_path}")
+
+        plt.close(fig)
+        return True
+
     def _excel_styles(self):
         """Mengembalikan dictionary style untuk Excel."""
         return {
@@ -2408,6 +2529,25 @@ def main():
         print(f"  File: {filepath}")
     else:
         print("  Hasil tidak disimpan ke Excel.")
+
+    # LANGKAH 6: Grafik Visualisasi Visibility Margin
+    if mode.lower() == 'optimal' and hasil.get('all_timestep_results'):
+        print("\n--- LANGKAH 6: GRAFIK VISUALISASI ---")
+        try:
+            simpan_grafik = input("  Simpan grafik visibilitas margin ke file gambar? (Y/n): ").strip().lower()
+        except EOFError:
+            simpan_grafik = 'n'
+
+        if simpan_grafik != 'n':
+            nama_file_safe = nama_tempat.replace(' ', '_').replace('/', '-').replace('\\', '-')
+            sumber_tag = sumber_atmosfer.upper()
+            nama_grafik = f"Grafik_Hilal_{nama_file_safe}_{bulan_hijri}_{tahun_hijri}_{sumber_tag}.png"
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(script_dir, 'output')
+            grafik_path = os.path.join(output_dir, nama_grafik)
+            calculator.plot_visibility_margin(save_path=grafik_path)
+        else:
+            print("  Grafik tidak disimpan.")
 
     return hasil
 

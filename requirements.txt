@@ -7,3 +7,4 @@ openmeteo-requests>=1.1.0
 requests-cache>=1.0.0
 retry-requests>=2.0.0
 pytz>=2021.1
+matplotlib>=3.5.0
