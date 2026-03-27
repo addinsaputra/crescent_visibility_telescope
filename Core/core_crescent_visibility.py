@@ -2421,6 +2421,651 @@ def _input_parameter_teleskop():
     return defaults
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-LOKASI: Fungsi pendukung untuk batch processing di mode interaktif
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _parse_range_input(input_str: str, max_val: int) -> list:
+    """
+    Parse input range string menjadi list of integers.
+    Contoh: "1,3,5-10,15" → [1, 3, 5, 6, 7, 8, 9, 10, 15]
+
+    Parameters:
+    -----------
+    input_str : str
+        String input dari user (contoh: "1,3,5-10,15")
+    max_val : int
+        Nilai maksimum yang valid (jumlah lokasi)
+
+    Returns:
+    --------
+    list[int]
+        List nomor lokasi (1-indexed) yang valid dan unik, terurut
+    """
+    result = set()
+    parts = input_str.replace(' ', '').split(',')
+    for part in parts:
+        if not part:
+            continue
+        if '-' in part:
+            try:
+                start, end = part.split('-', 1)
+                start, end = int(start), int(end)
+                for i in range(start, end + 1):
+                    if 1 <= i <= max_val:
+                        result.add(i)
+            except ValueError:
+                continue
+        else:
+            try:
+                val = int(part)
+                if 1 <= val <= max_val:
+                    result.add(val)
+            except ValueError:
+                continue
+    return sorted(result)
+
+
+def _input_mode_lokasi() -> str:
+    """
+    Input mode lokasi: tunggal atau multi.
+
+    Returns:
+    --------
+    str
+        'single' atau 'multi'
+    """
+    print("\n--- LANGKAH 0: MODE LOKASI ---")
+    print("  1. Lokasi Tunggal   — hitung visibilitas untuk satu lokasi")
+    print("  2. Multi-Lokasi     — hitung visibilitas untuk banyak lokasi sekaligus")
+
+    try:
+        pilihan = input("\n  Pilih mode (1/2) [enter=1]: ").strip() or "1"
+        if pilihan == "2":
+            print("  ✓ Mode: Multi-Lokasi")
+            return 'multi'
+        else:
+            print("  ✓ Mode: Lokasi Tunggal")
+            return 'single'
+    except (ValueError, EOFError):
+        print("  ✓ Mode default: Lokasi Tunggal")
+        return 'single'
+
+
+def _input_multi_lokasi() -> list:
+    """
+    Pilih beberapa lokasi dari daftar_lokasi untuk batch processing.
+
+    Returns:
+    --------
+    list[dict] or None
+        List dictionary lokasi yang dipilih, atau None jika dibatalkan
+    """
+    from daftar_lokasi import print_daftar_lokasi, get_list_lokasi
+
+    print("\n--- LANGKAH 1: PILIH LOKASI PENGAMATAN (MULTI) ---")
+    list_lokasi = print_daftar_lokasi()
+    n = len(list_lokasi)
+
+    print(f"\n  Pilih lokasi yang akan dihitung:")
+    print(f"  1. Semua lokasi ({n} lokasi)")
+    print(f"  2. Pilih beberapa (contoh: 1,3,5-10,15)")
+
+    try:
+        pilihan = input("\n  Pilih opsi (1/2) [enter=1]: ").strip() or "1"
+
+        if pilihan == "2":
+            range_str = input(f"  Masukkan nomor lokasi (1-{n}): ").strip()
+            if not range_str:
+                print("  [!] Input kosong. Menggunakan semua lokasi.")
+                indices = list(range(1, n + 1))
+            else:
+                indices = _parse_range_input(range_str, n)
+                if not indices:
+                    print("  [!] Tidak ada nomor valid. Menggunakan semua lokasi.")
+                    indices = list(range(1, n + 1))
+        else:
+            indices = list(range(1, n + 1))
+
+        selected = [list_lokasi[i - 1] for i in indices]
+
+        print(f"\n  ✓ {len(selected)} lokasi dipilih:")
+        for i, lok in enumerate(selected, 1):
+            print(f"    {i:2d}. {lok['nama']}  ({lok['lat']:.4f}°, {lok['lon']:.4f}°)")
+
+        return selected
+
+    except (ValueError, EOFError):
+        print("  [!] Input error. Menggunakan semua lokasi.")
+        return list_lokasi
+
+
+def _run_multi_lokasi(lokasi_list: list, shared_params: dict) -> list:
+    """
+    Jalankan perhitungan visibilitas hilal untuk banyak lokasi.
+
+    Parameters:
+    -----------
+    lokasi_list : list[dict]
+        Daftar lokasi (dari daftar_lokasi)
+    shared_params : dict
+        Parameter bersama: bulan_hijri, tahun_hijri, mode, delta_day,
+        sumber_atmosfer, tel_params, F_naked, dll.
+
+    Returns:
+    --------
+    list[dict]
+        List hasil per lokasi, masing-masing berisi 'lokasi', 'hasil', 'calculator', 'success'
+    """
+    import time
+
+    results = []
+    total = len(lokasi_list)
+
+    print("\n" + "█" * 70)
+    print("  BATCH PROCESSING: Visibilitas Hilal Multi-Lokasi")
+    print(f"  {total} lokasi × Bulan {shared_params['bulan_hijri']}/{shared_params['tahun_hijri']} H")
+    print(f"  Mode: {shared_params['mode']}  |  Atmosfer: {shared_params['sumber_atmosfer']}")
+    print("█" * 70)
+
+    t_batch_start = time.time()
+
+    for i, lokasi in enumerate(lokasi_list, 1):
+        nama = lokasi['nama']
+        lat = lokasi['lat']
+        lon = lokasi['lon']
+        elv = lokasi['elevasi']
+        tz = tentukan_timezone_indonesia(lon)
+
+        print(f"\n{'═' * 70}")
+        print(f"  [{i:2d}/{total}] {nama}")
+        print(f"         Lat={lat:.4f}°  Lon={lon:.4f}°  Elv={elv:.0f}m  TZ={tz}")
+        print(f"{'═' * 70}")
+
+        t_start = time.time()
+
+        try:
+            calculator = HilalVisibilityCalculator(
+                nama_tempat=nama,
+                lintang=lat,
+                bujur=lon,
+                elevasi=elv,
+                timezone_str=tz,
+                bulan_hijri=shared_params['bulan_hijri'],
+                tahun_hijri=shared_params['tahun_hijri'],
+                delta_day_offset=shared_params['delta_day'],
+                bias_t=lokasi.get('bias_t', 0.0),
+                bias_rh=lokasi.get('bias_rh', 0.0),
+                sumber_atmosfer=shared_params['sumber_atmosfer'],
+                adm4_code=lokasi.get('adm4_code', ''),
+                manual_rh=shared_params.get('manual_rh', 80.0),
+                manual_t=shared_params.get('manual_t', 25.0),
+                manual_p=shared_params.get('manual_p', 1013.25),
+            )
+
+            hasil = calculator.jalankan_perhitungan_lengkap(
+                use_telescope=True,
+                mode=shared_params['mode'],
+                min_moon_alt=2.0,
+                F_naked=shared_params['F_naked'],
+                **shared_params['tel_params'],
+            )
+
+            elapsed = time.time() - t_start
+
+            # Ringkasan singkat
+            dm_ne = hasil.get('delta_m_ne', -99)
+            dm_tel = hasil.get('delta_m_tel', -99)
+            if shared_params['mode'] == 'optimal':
+                dm_ne = hasil.get('optimal_delta_m_ne', dm_ne)
+                dm_tel = hasil.get('optimal_delta_m_tel', dm_tel)
+
+            status_ne = "TERLIHAT" if dm_ne >= 0 else "TIDAK"
+            status_tel = "TERDETEKSI" if dm_tel > 0 else "TIDAK"
+
+            print(f"\n  RINGKASAN: Δm_NE={dm_ne:+.3f} ({status_ne})  "
+                  f"Δm_Tel={dm_tel:+.3f} ({status_tel})  "
+                  f"⏱ {elapsed:.1f}s")
+
+            results.append({
+                'lokasi': lokasi,
+                'hasil': hasil,
+                'calculator': calculator,
+                'success': True,
+                'elapsed': elapsed,
+            })
+
+        except Exception as e:
+            elapsed = time.time() - t_start
+            print(f"\n  ✗ ERROR: {e}")
+            results.append({
+                'lokasi': lokasi,
+                'hasil': {},
+                'calculator': None,
+                'success': False,
+                'elapsed': elapsed,
+                'error': str(e),
+            })
+
+    total_time = time.time() - t_batch_start
+    n_success = sum(1 for r in results if r['success'])
+    print(f"\n{'█' * 70}")
+    print(f"  BATCH SELESAI: {n_success}/{total} berhasil dalam {total_time:.0f} detik")
+    print(f"{'█' * 70}")
+
+    # Tabel ringkasan akhir
+    _print_tabel_ringkasan_multi(results, shared_params)
+
+    return results
+
+
+def _print_tabel_ringkasan_multi(results: list, shared_params: dict):
+    """Cetak tabel ringkasan hasil multi-lokasi ke terminal."""
+    mode = shared_params['mode']
+    is_opt = (mode == 'optimal')
+
+    print(f"\n{'═' * 110}")
+    print(f"  TABEL RINGKASAN — Bulan {shared_params['bulan_hijri']}/{shared_params['tahun_hijri']} H"
+          f"  |  Mode: {mode}  |  Atmosfer: {shared_params['sumber_atmosfer'].upper()}")
+    print(f"{'═' * 110}")
+
+    header = (f"{'No':>3} | {'Lokasi':<35} | {'Lat':>9} | {'Lon':>9} | "
+              f"{'Moon Alt':>8} | {'Elong':>7} | {'Δm NE':>8} | {'Δm Tel':>8} | "
+              f"{'NE':>6} | {'Tel':>6}")
+    print(header)
+    print("-" * 110)
+
+    for i, r in enumerate(results, 1):
+        lok = r['lokasi']
+        if not r['success']:
+            print(f"{i:3d} | {lok['nama']:<35} | {lok['lat']:9.4f} | {lok['lon']:9.4f} | "
+                  f"{'ERROR':>8} | {'':>7} | {'':>8} | {'':>8} | {'':>6} | {'':>6}")
+            continue
+
+        h = r['hasil']
+        moon_alt = h.get('moon_alt', 0)
+        elong = h.get('elongation', 0)
+
+        if is_opt:
+            dm_ne = h.get('optimal_delta_m_ne', h.get('delta_m_ne', -99))
+            dm_tel = h.get('optimal_delta_m_tel', h.get('delta_m_tel', -99))
+        else:
+            dm_ne = h.get('delta_m_ne', -99)
+            dm_tel = h.get('delta_m_tel', -99)
+
+        st_ne = "Y" if dm_ne >= 0 else "N"
+        st_tel = "Y" if dm_tel > 0 else "N"
+
+        print(f"{i:3d} | {lok['nama']:<35} | {lok['lat']:9.4f} | {lok['lon']:9.4f} | "
+              f"{moon_alt:8.3f} | {elong:7.3f} | {dm_ne:+8.3f} | {dm_tel:+8.3f} | "
+              f"{st_ne:>6} | {st_tel:>6}")
+
+    print(f"{'═' * 110}")
+
+    # Hitung statistik
+    success_results = [r for r in results if r['success']]
+    if success_results:
+        n_ne = 0
+        n_tel = 0
+        for r in success_results:
+            h = r['hasil']
+            if is_opt:
+                dm_ne_val = h.get('optimal_delta_m_ne', h.get('delta_m_ne', -1))
+                dm_tel_val = h.get('optimal_delta_m_tel', h.get('delta_m_tel', -1))
+            else:
+                dm_ne_val = h.get('delta_m_ne', -1)
+                dm_tel_val = h.get('delta_m_tel', -1)
+            if dm_ne_val >= 0:
+                n_ne += 1
+            if dm_tel_val > 0:
+                n_tel += 1
+        print(f"  Naked Eye terlihat: {n_ne}/{len(success_results)}  |  "
+              f"Teleskop terdeteksi: {n_tel}/{len(success_results)}")
+
+
+def _simpan_excel_multi(results: list, shared_params: dict, filepath: str) -> str:
+    """
+    Simpan hasil multi-lokasi ke file Excel gabungan.
+
+    Sheet 1: "Ringkasan Multi-Lokasi" — tabel semua lokasi
+    Sheet 2: "Info & Parameter" — konfigurasi yang digunakan
+
+    Parameters:
+    -----------
+    results : list[dict]
+        Hasil dari _run_multi_lokasi()
+    shared_params : dict
+        Parameter bersama
+    filepath : str
+        Path file Excel
+
+    Returns:
+    --------
+    str
+        Path file yang disimpan
+    """
+    wb = Workbook()
+    mode = shared_params['mode']
+    is_opt = (mode == 'optimal')
+
+    # --- Style definitions ---
+    header_font = Font(name='Segoe UI', bold=True, size=11, color='FFFFFF')
+    header_fill = PatternFill(start_color='1F4E79', end_color='1F4E79', fill_type='solid')
+    data_font = Font(name='Segoe UI', size=10)
+    data_font_bold = Font(name='Segoe UI', size=10, bold=True)
+    align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    align_left = Alignment(horizontal='left', vertical='center')
+    thin_border = Border(
+        left=Side(style='thin', color='BDD7EE'),
+        right=Side(style='thin', color='BDD7EE'),
+        top=Side(style='thin', color='BDD7EE'),
+        bottom=Side(style='thin', color='BDD7EE')
+    )
+    green_fill = PatternFill(start_color='C6E0B4', end_color='C6E0B4', fill_type='solid')
+    red_fill = PatternFill(start_color='F8CBAD', end_color='F8CBAD', fill_type='solid')
+    yellow_fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
+
+    # ═══════════════════════════════════════════════════════════════
+    # Sheet 1: Ringkasan Multi-Lokasi
+    # ═══════════════════════════════════════════════════════════════
+    ws = wb.active
+    ws.title = "Ringkasan Multi-Lokasi"
+    ws.sheet_properties.tabColor = '1F4E79'
+
+    headers = [
+        'No', 'Lokasi', 'Lat (°)', 'Lon (°)', 'Elv (m)',
+        'Sunset', 'Moon Alt (°)', 'Elongasi (°)', 'Phase Angle (°)',
+        'RH (%)', 'T (°C)', 'k_V',
+        'Sky Bright. (nL)', 'Lumin. Hilal (nL)',
+        'Δm NE (sunset)', 'Δm Tel (sunset)',
+    ]
+    if is_opt:
+        headers += [
+            'Δm NE (optimal)', 'Δm Tel (optimal)',
+            'Waktu Opt NE', 'Waktu Opt Tel',
+            'Durasi NE (min)', 'Durasi Tel (min)',
+            'Tel Gain (mag)',
+        ]
+    headers += ['Status NE', 'Status Tel']
+
+    # Write headers
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = align_center
+        cell.border = thin_border
+
+    # Write data rows
+    for i, r in enumerate(results, 1):
+        row_idx = i + 1
+        lok = r['lokasi']
+
+        if not r['success']:
+            row_data = [i, lok['nama'], lok['lat'], lok['lon'], lok['elevasi']]
+            row_data += ['ERROR'] + [''] * (len(headers) - 6) + ['ERROR']
+            for col, val in enumerate(row_data, 1):
+                cell = ws.cell(row=row_idx, column=col, value=val)
+                cell.font = data_font
+                cell.alignment = align_center if col != 2 else align_left
+                cell.border = thin_border
+                if val == 'ERROR':
+                    cell.fill = red_fill
+            continue
+
+        h = r['hasil']
+
+        # Tentukan delta_m final
+        if is_opt:
+            dm_ne_final = h.get('optimal_delta_m_ne', h.get('delta_m_ne', -99))
+            dm_tel_final = h.get('optimal_delta_m_tel', h.get('delta_m_tel', -99))
+        else:
+            dm_ne_final = h.get('delta_m_ne', -99)
+            dm_tel_final = h.get('delta_m_tel', -99)
+
+        st_ne = "TERLIHAT" if dm_ne_final >= 0 else "TIDAK TERLIHAT"
+        st_tel = "TERDETEKSI" if dm_tel_final > 0 else "TIDAK TERDETEKSI"
+
+        sunset_str = ''
+        sunset_val = h.get('sunset_local')
+        if sunset_val and hasattr(sunset_val, 'strftime'):
+            sunset_str = sunset_val.strftime('%H:%M:%S')
+
+        row_data = [
+            i, lok['nama'], lok['lat'], lok['lon'], lok['elevasi'],
+            sunset_str,
+            round(h.get('moon_alt', 0), 4),
+            round(h.get('elongation', 0), 4),
+            round(h.get('phase_angle', 0), 4),
+            round(h.get('rh', 0), 2),
+            round(h.get('temperature', 0), 2),
+            round(h.get('k_v', 0), 4),
+            f"{h.get('sky_brightness_nl', 0):.4e}",
+            f"{h.get('luminansi_hilal_nl', 0):.4e}",
+            round(h.get('delta_m_ne', -99), 4),
+            round(h.get('delta_m_tel', -99), 4),
+        ]
+
+        if is_opt:
+            opt_time_ne = h.get('optimal_time_ne')
+            opt_time_tel = h.get('optimal_time_tel')
+            row_data += [
+                round(h.get('optimal_delta_m_ne', -99), 4),
+                round(h.get('optimal_delta_m_tel', -99), 4),
+                opt_time_ne.strftime('%H:%M:%S') if opt_time_ne and hasattr(opt_time_ne, 'strftime') else '',
+                opt_time_tel.strftime('%H:%M:%S') if opt_time_tel and hasattr(opt_time_tel, 'strftime') else '',
+                h.get('visibility_duration_ne', 0),
+                h.get('visibility_duration_tel', 0),
+                round(h.get('optimal_telescope_gain', h.get('telescope_gain', 0)), 4),
+            ]
+
+        row_data += [st_ne, st_tel]
+
+        for col, val in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col, value=val)
+            cell.font = data_font
+            cell.alignment = align_center if col != 2 else align_left
+            cell.border = thin_border
+
+        # Warnai kolom status
+        col_st_ne = len(headers) - 1
+        col_st_tel = len(headers)
+        ws.cell(row=row_idx, column=col_st_ne).fill = green_fill if dm_ne_final >= 0 else red_fill
+        ws.cell(row=row_idx, column=col_st_ne).font = data_font_bold
+        ws.cell(row=row_idx, column=col_st_tel).fill = green_fill if dm_tel_final > 0 else red_fill
+        ws.cell(row=row_idx, column=col_st_tel).font = data_font_bold
+
+    # Auto-fit column widths
+    for col in range(1, len(headers) + 1):
+        max_len = len(str(headers[col - 1]))
+        for row_idx in range(2, len(results) + 2):
+            cell_val = ws.cell(row=row_idx, column=col).value
+            if cell_val:
+                max_len = max(max_len, len(str(cell_val)))
+        ws.column_dimensions[get_column_letter(col)].width = min(max_len + 3, 30)
+    # Kolom lokasi lebih lebar
+    ws.column_dimensions['B'].width = 38
+
+    ws.freeze_panes = 'A2'
+
+    # ═══════════════════════════════════════════════════════════════
+    # Sheet 2: Info & Parameter
+    # ═══════════════════════════════════════════════════════════════
+    ws2 = wb.create_sheet(title="Info & Parameter")
+    ws2.sheet_properties.tabColor = 'BF8F00'
+    ws2.column_dimensions['A'].width = 35
+    ws2.column_dimensions['B'].width = 50
+
+    tel = shared_params['tel_params']
+    sumber_label = HilalVisibilityCalculator.SUMBER_ATMOSFER_LABEL.get(
+        shared_params['sumber_atmosfer'], shared_params['sumber_atmosfer'].upper())
+
+    info_data = [
+        ('Program', 'Perhitungan Visibilitas Hilal — Multi-Lokasi'),
+        ('Bulan Hijriah', f"{shared_params['bulan_hijri']}"),
+        ('Tahun Hijriah', f"{shared_params['tahun_hijri']}"),
+        ('Mode Perhitungan', mode),
+        ('Offset Hari', f"H + {shared_params['delta_day']} hari"),
+        ('Sumber Data Atmosfer', sumber_label),
+        ('Jumlah Lokasi', f"{len(results)}"),
+        ('Berhasil', f"{sum(1 for r in results if r['success'])}"),
+        ('', ''),
+        ('--- Parameter Teleskop ---', ''),
+        ('Aperture (mm)', f"{tel.get('aperture', 100.0)}"),
+        ('Magnification (x)', f"{tel.get('magnification', 50.0)}"),
+        ('Central Obstruction (mm)', f"{tel.get('central_obstruction', 0.0)}"),
+        ('Transmission', f"{tel.get('transmission', 0.95)}"),
+        ('N Surfaces', f"{tel.get('n_surfaces', 6)}"),
+        ('Observer Age', f"{tel.get('observer_age', 22.0)}"),
+        ('Seeing (arcsec)', f"{tel.get('seeing', 3.0)}"),
+        ('Field Factor Teleskop (F)', f"{tel.get('field_factor', 2.4)}"),
+        ('Field Factor Naked Eye (F)', f"{shared_params['F_naked']}"),
+        ('', ''),
+        ('Tanggal Eksekusi', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+    ]
+
+    for col, hdr in enumerate(['Parameter', 'Nilai'], 1):
+        cell = ws2.cell(row=1, column=col, value=hdr)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = align_center
+        cell.border = thin_border
+
+    for i, (param, nilai) in enumerate(info_data, 2):
+        cell_p = ws2.cell(row=i, column=1, value=param)
+        cell_p.font = data_font_bold if param.startswith('---') else data_font
+        cell_p.border = thin_border
+        cell_v = ws2.cell(row=i, column=2, value=nilai)
+        cell_v.font = data_font
+        cell_v.border = thin_border
+
+    ws2.freeze_panes = 'A2'
+
+    # Save
+    output_dir = os.path.dirname(filepath)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    wb.save(filepath)
+    print(f"\n  ✓ Hasil multi-lokasi disimpan ke: {filepath}")
+    return filepath
+
+
+def _plot_multi_lokasi(results: list, shared_params: dict,
+                       save_path: Optional[str] = None) -> bool:
+    """
+    Plot perbandingan delta_m (visibility margin) antar lokasi.
+
+    Horizontal bar chart: lokasi di sumbu Y, delta_m di sumbu X.
+    Warna hijau jika terlihat (delta_m ≥ 0), merah jika tidak.
+
+    Parameters:
+    -----------
+    results : list[dict]
+        Hasil dari _run_multi_lokasi()
+    shared_params : dict
+        Parameter bersama
+    save_path : str or None
+        Path untuk menyimpan gambar. None = hanya tampilkan.
+
+    Returns:
+    -------
+    bool
+        True jika berhasil, False jika gagal.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as ticker
+    except ImportError:
+        print("  [!] matplotlib belum terinstall. Jalankan: pip install matplotlib")
+        return False
+
+    success_results = [r for r in results if r['success']]
+    if not success_results:
+        print("  [!] Tidak ada hasil valid untuk diplot.")
+        return False
+
+    mode = shared_params['mode']
+    is_opt = (mode == 'optimal')
+
+    # Kumpulkan data
+    nama_list = []
+    dm_ne_list = []
+    dm_tel_list = []
+
+    for r in reversed(success_results):  # reversed agar urutan atas→bawah sesuai input
+        lok = r['lokasi']
+        h = r['hasil']
+        # Singkat nama jika terlalu panjang
+        nama = lok['nama']
+        if len(nama) > 30:
+            nama = nama[:28] + '…'
+        nama_list.append(nama)
+
+        if is_opt:
+            dm_ne_list.append(h.get('optimal_delta_m_ne', h.get('delta_m_ne', -99)))
+            dm_tel_list.append(h.get('optimal_delta_m_tel', h.get('delta_m_tel', -99)))
+        else:
+            dm_ne_list.append(h.get('delta_m_ne', -99))
+            dm_tel_list.append(h.get('delta_m_tel', -99))
+
+    n = len(nama_list)
+    fig_height = max(6, n * 0.5 + 2)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, fig_height), sharey=True)
+
+    y_pos = range(n)
+    bar_height = 0.6
+
+    # --- Panel kiri: Naked Eye ---
+    colors_ne = ['#4CAF50' if v >= 0 else '#F44336' for v in dm_ne_list]
+    ax1.barh(y_pos, dm_ne_list, height=bar_height, color=colors_ne, edgecolor='white', linewidth=0.5)
+    ax1.axvline(x=0, color='#333333', linewidth=1.2, linestyle='-')
+    ax1.set_yticks(y_pos)
+    ax1.set_yticklabels(nama_list, fontsize=9)
+    ax1.set_xlabel('Visibility Margin Δm (mag)', fontsize=11, fontweight='bold')
+    ax1.set_title('Naked Eye', fontsize=13, fontweight='bold', pad=10)
+    ax1.grid(axis='x', alpha=0.3, linestyle='--')
+    # Anotasi nilai
+    for j, v in enumerate(dm_ne_list):
+        ax1.text(v + (0.3 if v >= 0 else -0.3), j, f'{v:+.2f}',
+                 va='center', ha='left' if v >= 0 else 'right', fontsize=8)
+
+    # --- Panel kanan: Teleskop ---
+    colors_tel = ['#4CAF50' if v > 0 else '#F44336' for v in dm_tel_list]
+    ax2.barh(y_pos, dm_tel_list, height=bar_height, color=colors_tel, edgecolor='white', linewidth=0.5)
+    ax2.axvline(x=0, color='#333333', linewidth=1.2, linestyle='-')
+    ax2.set_xlabel('Visibility Margin Δm (mag)', fontsize=11, fontweight='bold')
+    ax2.set_title('Teleskop', fontsize=13, fontweight='bold', pad=10)
+    ax2.grid(axis='x', alpha=0.3, linestyle='--')
+    # Anotasi nilai
+    for j, v in enumerate(dm_tel_list):
+        ax2.text(v + (0.3 if v > 0 else -0.3), j, f'{v:+.2f}',
+                 va='center', ha='left' if v > 0 else 'right', fontsize=8)
+
+    # Judul utama
+    bln = shared_params['bulan_hijri']
+    thn = shared_params['tahun_hijri']
+    sumber = shared_params['sumber_atmosfer'].upper()
+    mode_label = "Optimal" if is_opt else "Sunset"
+    fig.suptitle(
+        f'Perbandingan Visibilitas Hilal — Bulan {bln}/{thn} H\n'
+        f'Mode: {mode_label}  |  Atmosfer: {sumber}  |  {n} Lokasi',
+        fontsize=14, fontweight='bold', y=1.02
+    )
+
+    plt.tight_layout()
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"  [✓] Grafik perbandingan disimpan: {save_path}")
+
+    plt.close(fig)
+    return True
+
+
 def main():
     """Fungsi utama dengan mode interaktif untuk pemilihan lokasi dan parameter."""
     from daftar_lokasi import pilih_lokasi_interaktif
@@ -2429,6 +3074,19 @@ def main():
     print("  PROGRAM PERHITUNGAN VISIBILITAS HILAL")
     print("  Model: Schaefer (Sky Brightness) + Kastner (Luminansi Hilal)")
     print("=" * 70)
+
+    # LANGKAH 0: Pilih Mode Lokasi (Tunggal / Multi)
+    mode_lokasi = _input_mode_lokasi()
+
+    if mode_lokasi == 'multi':
+        return _main_multi()
+    else:
+        return _main_single()
+
+
+def _main_single():
+    """Alur interaktif untuk perhitungan lokasi tunggal (alur asli)."""
+    from daftar_lokasi import pilih_lokasi_interaktif
 
     # LANGKAH 1: Pilih Lokasi
     print("\n--- LANGKAH 1: PILIH LOKASI PENGAMATAN ---")
@@ -2550,6 +3208,93 @@ def main():
             print("  Grafik tidak disimpan.")
 
     return hasil
+
+
+def _main_multi():
+    """Alur interaktif untuk perhitungan multi-lokasi (batch)."""
+
+    # LANGKAH 1B: Pilih Lokasi-Lokasi
+    lokasi_list = _input_multi_lokasi()
+    if not lokasi_list:
+        print("[!] Tidak ada lokasi yang dipilih. Program dihentikan.")
+        return None
+
+    # LANGKAH 2: Input Bulan dan Tahun Hijriah (shared)
+    result = _input_bulan_tahun_hijri()
+    if result is None:
+        return None
+    bulan_hijri, tahun_hijri = result
+
+    # LANGKAH 3 & 3.5: Mode dan Offset (shared)
+    mode, delta_day = _input_mode_dan_offset()
+
+    # LANGKAH 3.6: Sumber Data Atmosfer (shared)
+    # Untuk multi-lokasi, adm4_code diambil per lokasi, jadi pass empty string
+    sumber_atmosfer, _, manual_rh, manual_t, manual_p = _input_sumber_atmosfer('')
+
+    # LANGKAH 3.7: Koreksi Bias
+    # Untuk multi-lokasi, gunakan bias bawaan masing-masing lokasi
+    if sumber_atmosfer != 'manual':
+        print(f"\n--- LANGKAH 3.7: KOREKSI BIAS ---")
+        print(f"  ✓ Mode multi-lokasi: menggunakan bias bawaan per lokasi")
+        print(f"    (setiap lokasi memiliki bias_t dan bias_rh dari database)")
+
+    # LANGKAH 4: Parameter Teleskop & Field Factor (shared)
+    tel_params = _input_parameter_teleskop()
+    F_naked = tel_params.pop('F_naked')
+
+    # Susun shared_params
+    shared_params = {
+        'bulan_hijri': bulan_hijri,
+        'tahun_hijri': tahun_hijri,
+        'mode': mode,
+        'delta_day': delta_day,
+        'sumber_atmosfer': sumber_atmosfer,
+        'manual_rh': manual_rh,
+        'manual_t': manual_t,
+        'manual_p': manual_p,
+        'F_naked': F_naked,
+        'tel_params': tel_params,
+    }
+
+    # JALANKAN BATCH
+    results = _run_multi_lokasi(lokasi_list, shared_params)
+
+    # LANGKAH 5B: Simpan ke Excel
+    print("\n--- LANGKAH 5: SIMPAN HASIL KE EXCEL ---")
+    try:
+        simpan_excel = input("  Simpan hasil multi-lokasi ke file Excel? (Y/n): ").strip().lower()
+    except EOFError:
+        simpan_excel = 'n'
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, 'output')
+
+    if simpan_excel != 'n':
+        sumber_tag = sumber_atmosfer.upper()
+        nama_file = f"Hilal_Multi_{bulan_hijri}_{tahun_hijri}_{sumber_tag}_{len(results)}lokasi.xlsx"
+        filepath = os.path.join(output_dir, nama_file)
+        _simpan_excel_multi(results, shared_params, filepath)
+        print(f"  File: {filepath}")
+    else:
+        print("  Hasil tidak disimpan ke Excel.")
+
+    # LANGKAH 6B: Grafik Perbandingan Multi-Lokasi
+    print("\n--- LANGKAH 6: GRAFIK PERBANDINGAN MULTI-LOKASI ---")
+    try:
+        simpan_grafik = input("  Simpan grafik perbandingan visibilitas antar lokasi? (Y/n): ").strip().lower()
+    except EOFError:
+        simpan_grafik = 'n'
+
+    if simpan_grafik != 'n':
+        sumber_tag = sumber_atmosfer.upper()
+        nama_grafik = f"Grafik_Multi_{bulan_hijri}_{tahun_hijri}_{sumber_tag}_{len(results)}lokasi.png"
+        grafik_path = os.path.join(output_dir, nama_grafik)
+        _plot_multi_lokasi(results, shared_params, save_path=grafik_path)
+    else:
+        print("  Grafik tidak disimpan.")
+
+    return results
 
 
 if __name__ == "__main__":
