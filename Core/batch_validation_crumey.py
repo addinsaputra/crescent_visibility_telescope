@@ -562,84 +562,85 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
         c.alignment = center
         c.border = thin_border
 
-    # Grup: Sunset (I1:U1)
-    ws.merge_cells('I1:U1')
+    # Grup: Sunset (I1:V1)
+    ws.merge_cells('I1:V1')
     c = ws.cell(row=1, column=9,
                 value='DATA VISIBILITAS HILAL NAKED EYE DAN TELESKOP SAAT SUNSET')
     c.font = hdr_font; c.fill = sunset_fill
     c.alignment = center_no_v; c.border = thin_border
 
-    # Grup: Optimal NE (V1:AE1)
-    ws.merge_cells('V1:AE1')
-    c = ws.cell(row=1, column=22,
+    # Grup: Optimal NE (W1:AF1)
+    ws.merge_cells('W1:AF1')
+    c = ws.cell(row=1, column=23,
                 value='DATA VISIBILITAS HILAL NAKED EYE WAKTU OPTIMAL ATAU BEST TIME')
     c.font = hdr_font; c.fill = opt_ne_fill
     c.alignment = center_no_v; c.border = thin_border
 
-    # Grup: Teleskop (AF1:AS1)
-    ws.merge_cells('AF1:AS1')
-    c = ws.cell(row=1, column=32,
+    # Grup: Teleskop (AG1:AT1)
+    ws.merge_cells('AG1:AT1')
+    c = ws.cell(row=1, column=33,
                 value='DATA VISIBILITAS HILAL BERBANTUAN TELESKOP BEST TIME')
     c.font = hdr_font; c.fill = tel_fill
     c.alignment = center_no_v; c.border = thin_border
 
     # ── Row 2: Sub-header kolom per grup ──
-    # Sunset (I-U)
+    # Sunset (I-V)
     sunset_hdrs = {
         9: 'Sunset Lokal', 10: 'Moon Alt (\u00b0)', 11: 'Elongasi (\u00b0)',
-        12: 'Phase Angle (\u00b0)', 13: 'Sky Bright (nL)', 14: 'Lum Hilal (nL)',
-        15: 'k_V', 16: 'RH (%)', 17: 'T (\u00b0C)',
+        12: 'Lebar Sabit (arcmin)', 13: 'Phase Angle (\u00b0)',
+        14: 'Sky Bright (nL)', 15: 'Lum Hilal (nL)',
+        16: 'k_V', 17: 'RH (%)', 18: 'T (\u00b0C)',
     }
     for ci, h in sunset_hdrs.items():
         c = ws.cell(row=2, column=ci, value=h)
         c.font = hdr_font; c.fill = sunset_fill
         c.alignment = center; c.border = thin_border
 
-    # Δm NE sunset (R2:S2)
-    ws.merge_cells('R2:S2')
-    c = ws.cell(row=2, column=18, value='\u0394m NE')
+    # Δm NE sunset (S2:T2)
+    ws.merge_cells('S2:T2')
+    c = ws.cell(row=2, column=19, value='\u0394m NE')
     c.font = hdr_font; c.fill = sunset_fill
     c.alignment = center; c.border = thin_border
 
-    # Δm Tel sunset (T2:U2)
-    ws.merge_cells('T2:U2')
-    c = ws.cell(row=2, column=20, value='\u0394m Tel ')
+    # Δm Tel sunset (U2:V2)
+    ws.merge_cells('U2:V2')
+    c = ws.cell(row=2, column=21, value='\u0394m Tel ')
     c.font = hdr_font; c.fill = sunset_fill
     c.alignment = center; c.border = thin_border
 
-    # Optimal NE (V-AE)
+    # Optimal NE (W-AF)
     opt_ne_hdrs = {
-        22: 'Best Time NE', 23: 'Moon Alt (\u00b0)', 24: 'Elongasi (\u00b0)',
-        25: 'Sky Bright (nL)', 26: 'Lum Hilal (nL)',
-        27: 'k_V', 28: 'RH (%)', 29: 'T (\u00b0C)',
+        23: 'Best Time NE', 24: 'Moon Alt (\u00b0)', 25: 'Elongasi (\u00b0)',
+        26: 'Sky Bright (nL)', 27: 'Lum Hilal (nL)',
+        28: 'k_V', 29: 'RH (%)', 30: 'T (\u00b0C)',
     }
     for ci, h in opt_ne_hdrs.items():
         c = ws.cell(row=2, column=ci, value=h)
         c.font = hdr_font; c.fill = opt_ne_fill
         c.alignment = center; c.border = thin_border
 
-    # Δm NE optimal (AD2:AE2)
-    ws.merge_cells('AD2:AE2')
-    c = ws.cell(row=2, column=30, value='\u0394m NE')
+    # Δm NE optimal (AE2:AF2)
+    ws.merge_cells('AE2:AF2')
+    c = ws.cell(row=2, column=31, value='\u0394m NE')
     c.font = hdr_font; c.fill = opt_ne_fill
     c.alignment = center; c.border = thin_border
 
-    # Teleskop (AF-AS)
+    # Teleskop (AG-AT)
     tel_hdrs = {
-        32: 'Best Time Tel', 33: 'Moon Alt (\u00b0)', 34: 'Elongasi (\u00b0)',
-        35: 'Sky Bright (nL)', 36: 'Lum Hilal (nL)',
-        37: 'k_V', 38: 'RH (%)', 39: 'T (\u00b0C)',
-        40: 'Tel Gain Opt', 41: 'Leg time (mnt)',
-        44: 'Observasi Tel', 45: 'Correct',
+        33: 'Best Time Tel', 34: 'Moon Alt (\u00b0)', 35: 'Elongasi (\u00b0)',
+        36: 'Sky Bright (nL)', 37: 'Lum Hilal (nL)',
+        38: 'k_V', 39: 'RH (%)', 40: 'T (\u00b0C)',
+        41: 'Tel Gain Opt', 42: 'Leg time (mnt)',
+        45: 'Observasi Tel', 46: 'Correct',
     }
     for ci, h in tel_hdrs.items():
         c = ws.cell(row=2, column=ci, value=h)
         c.font = hdr_font; c.fill = tel_fill
         c.alignment = center; c.border = thin_border
 
-    # Δm Tel teleskop (AP2:AQ2)
-    ws.merge_cells('AP2:AQ2')
-    c = ws.cell(row=2, column=42, value='\u0394m Tel')
+    # Δm Tel teleskop (AQ2:AR2)
+    ws.merge_cells('AQ2:AR2')
+    c = ws.cell(row=2, column=43, value='\u0394m Tel')
     c.font = hdr_font; c.fill = tel_fill
     c.alignment = center; c.border = thin_border
 
@@ -670,9 +671,9 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
 
     # ── Data rows (mulai baris 3) ──
     # Kolom yang diberi warna Δm data
-    SUNSET_DM_COLS = {18, 19, 20, 21}
-    OPT_NE_DM_COLS = {30, 31}
-    TEL_DM_COLS = {42, 43, 44}
+    SUNSET_DM_COLS = {19, 20, 21, 22}
+    OPT_NE_DM_COLS = {31, 32}
+    TEL_DM_COLS = {43, 44, 45}
 
     for i, r in enumerate(results, 3):
         obs_str = "Y" if r['observed'] else "N"
@@ -696,46 +697,47 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
             6: r.get('elv', 0),
             7: f"{r.get('bulan_hijri', 0)}/{r.get('tahun_hijri', 0)}",
             8: _tz_offset(r.get('lon', 0)),
-            # Sunset (I-U)
+            # Sunset (I-V)
             9: _parse_time(r.get('sunset_local', '')),
             10: round(r.get('moon_alt_sunset', 0), 4),
             11: round(r.get('elongation', 0), 4),
-            12: round(r.get('phase_angle', 0), 4),
-            13: f"{r.get('sky_brightness_nl', 0):.4e}",
-            14: f"{r.get('luminansi_hilal_nl', 0):.4e}",
-            15: round(r.get('k_v', 0), 4),
-            16: round(r.get('rh', 0), 2),
-            17: round(r.get('temperature', 0), 2),
-            18: round(dm_ne_sun, 4),
-            19: pred_ne_sun,
-            20: round(dm_tel_sun, 4),
-            21: pred_tel_sun,
-            # Optimal NE (V-AE)
-            22: _parse_time(r.get('optimal_time_ne', '')),
-            23: round(r.get('optimal_moon_alt_ne', 0), 4),
-            24: round(r.get('opt_ne_elongation', 0), 4),
-            25: f"{r.get('opt_ne_sky_brightness_nl', 0):.4e}",
-            26: f"{r.get('opt_ne_luminansi_hilal_nl', 0):.4e}",
-            27: round(r.get('opt_ne_k_v', 0), 4),
-            28: round(r.get('opt_ne_rh', 0), 2),
-            29: round(r.get('opt_ne_temperature', 0), 2),
-            30: round(dm_ne_opt, 4),
-            31: pred_ne_opt,
-            # Teleskop (AF-AS)
-            32: _parse_time(r.get('optimal_time_tel', '')),
-            33: round(r.get('optimal_moon_alt_tel', 0), 4),
-            34: round(r.get('opt_tel_elongation', 0), 4),
-            35: f"{r.get('opt_tel_sky_brightness_nl', 0):.4e}",
-            36: f"{r.get('opt_tel_luminansi_hilal_nl', 0):.4e}",
-            37: round(r.get('opt_tel_k_v', 0), 4),
-            38: round(r.get('opt_tel_rh', 0), 2),
-            39: round(r.get('opt_tel_temperature', 0), 2),
-            40: round(r.get('telescope_gain_opt', 0), 4),
-            41: int(round(r.get('vis_duration_tel', 0))),
-            42: round(dm_tel_opt, 4),
-            43: pred_tel_opt,
-            44: obs_str,
-            45: cocok,
+            12: round(r.get('moon_width', 0) * 60.0, 4),
+            13: round(r.get('phase_angle', 0), 4),
+            14: f"{r.get('sky_brightness_nl', 0):.4e}",
+            15: f"{r.get('luminansi_hilal_nl', 0):.4e}",
+            16: round(r.get('k_v', 0), 4),
+            17: round(r.get('rh', 0), 2),
+            18: round(r.get('temperature', 0), 2),
+            19: round(dm_ne_sun, 4),
+            20: pred_ne_sun,
+            21: round(dm_tel_sun, 4),
+            22: pred_tel_sun,
+            # Optimal NE (W-AF)
+            23: _parse_time(r.get('optimal_time_ne', '')),
+            24: round(r.get('optimal_moon_alt_ne', 0), 4),
+            25: round(r.get('opt_ne_elongation', 0), 4),
+            26: f"{r.get('opt_ne_sky_brightness_nl', 0):.4e}",
+            27: f"{r.get('opt_ne_luminansi_hilal_nl', 0):.4e}",
+            28: round(r.get('opt_ne_k_v', 0), 4),
+            29: round(r.get('opt_ne_rh', 0), 2),
+            30: round(r.get('opt_ne_temperature', 0), 2),
+            31: round(dm_ne_opt, 4),
+            32: pred_ne_opt,
+            # Teleskop (AG-AT)
+            33: _parse_time(r.get('optimal_time_tel', '')),
+            34: round(r.get('optimal_moon_alt_tel', 0), 4),
+            35: round(r.get('opt_tel_elongation', 0), 4),
+            36: f"{r.get('opt_tel_sky_brightness_nl', 0):.4e}",
+            37: f"{r.get('opt_tel_luminansi_hilal_nl', 0):.4e}",
+            38: round(r.get('opt_tel_k_v', 0), 4),
+            39: round(r.get('opt_tel_rh', 0), 2),
+            40: round(r.get('opt_tel_temperature', 0), 2),
+            41: round(r.get('telescope_gain_opt', 0), 4),
+            42: int(round(r.get('vis_duration_tel', 0))),
+            43: round(dm_tel_opt, 4),
+            44: pred_tel_opt,
+            45: obs_str,
+            46: cocok,
         }
 
         for ci, val in row_data.items():
@@ -745,7 +747,7 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
             c.border = thin_border_no_top
 
             # Format waktu
-            if ci in (9, 22, 32) and isinstance(val, dt_time):
+            if ci in (9, 23, 33) and isinstance(val, dt_time):
                 c.number_format = 'h:mm:ss'
 
             # Warna Δm data
@@ -757,21 +759,21 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
                 c.fill = tel_data_fill
 
             # Kolom Correct
-            if ci == 45:
+            if ci == 46:
                 c.fill = green_fill if cocok == "\u2713" else red_fill
 
     # ── Column widths ──
     col_widths = {
         'A': 4, 'B': 12, 'C': 30, 'D': 11, 'E': 12, 'F': 7,
         'G': 13, 'H': 7.57,
-        'I': 14.29, 'J': 12.71, 'K': 14, 'L': 17, 'M': 13,
-        'N': 16, 'O': 8, 'P': 13, 'Q': 13, 'R': 9.29, 'S': 4,
-        'T': 9.29, 'U': 4.43,
-        'V': 14.57, 'W': 12.86, 'X': 11.86, 'Y': 15.71, 'Z': 15,
-        'AA': 8.29, 'AB': 9.14, 'AC': 7.57, 'AD': 9, 'AE': 3.86,
-        'AF': 14.71, 'AG': 12.86, 'AH': 11.86, 'AI': 15.71,
-        'AJ': 15, 'AK': 7.29, 'AL': 9, 'AM': 7.43, 'AN': 13.29,
-        'AO': 15.14, 'AP': 8.43, 'AQ': 4.29, 'AR': 14.43, 'AS': 8.29,
+        'I': 14.29, 'J': 12.71, 'K': 14, 'L': 17, 'M': 17, 'N': 13,
+        'O': 16, 'P': 8, 'Q': 13, 'R': 13, 'S': 9.29, 'T': 4,
+        'U': 9.29, 'V': 4.43,
+        'W': 14.57, 'X': 12.86, 'Y': 11.86, 'Z': 15.71, 'AA': 15,
+        'AB': 8.29, 'AC': 9.14, 'AD': 7.57, 'AE': 9, 'AF': 3.86,
+        'AG': 14.71, 'AH': 12.86, 'AI': 11.86, 'AJ': 15.71,
+        'AK': 15, 'AL': 7.29, 'AM': 9, 'AN': 7.43, 'AO': 13.29,
+        'AP': 15.14, 'AQ': 8.43, 'AR': 4.29, 'AS': 14.43, 'AT': 8.29,
     }
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
