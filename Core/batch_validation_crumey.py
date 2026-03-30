@@ -494,152 +494,289 @@ def print_results_table(results: List[dict]):
 # ═══════════════════════════════════════════════════════════════════
 
 def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data Bawaan Lokasi"):
-    """Simpan semua hasil ke file Excel."""
+    """Simpan semua hasil ke file Excel dengan format rapi 2-baris header."""
+    from datetime import time as dt_time
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.styles.colors import Color
     from openpyxl.utils import get_column_letter
 
     wb = Workbook()
-    styles = {
-        'hdr_font': Font(name='Arial', bold=True, size=11, color='FFFFFF'),
-        'hdr_fill': PatternFill('solid', fgColor='1F4E79'),
-        'data_font': Font(name='Arial', size=10),
-        'bold_font': Font(name='Arial', size=10, bold=True),
-        'center': Alignment(horizontal='center', vertical='center'),
-        'left': Alignment(horizontal='left', vertical='center'),
-        'green': PatternFill('solid', fgColor='C6EFCE'),
-        'red': PatternFill('solid', fgColor='FFC7CE'),
-        'yellow': PatternFill('solid', fgColor='FFEB9C'),
-        'border': Border(
-            left=Side('thin', 'B0B0B0'), right=Side('thin', 'B0B0B0'),
-            top=Side('thin', 'B0B0B0'), bottom=Side('thin', 'B0B0B0')),
+
+    # ── Styles ──
+    thin_border = Border(
+        left=Side('thin'), right=Side('thin'),
+        top=Side('thin'), bottom=Side('thin'))
+    thin_border_no_top = Border(
+        left=Side('thin'), right=Side('thin'),
+        bottom=Side('thin'))
+
+    hdr_font = Font(name='Times New Roman', bold=True, size=11,
+                    color=Color(theme=1))
+    data_font = Font(name='Times New Roman', size=10)
+    center = Alignment(horizontal='center', vertical='center')
+    center_no_v = Alignment(horizontal='center')
+    left_align = Alignment(horizontal='left', vertical='center')
+
+    # Header fills (warna grup)
+    meta_fill = PatternFill('solid', fgColor='0070C0')
+    sunset_fill = PatternFill('solid',
+                              fgColor=Color(theme=9, tint=-0.249977111117893))
+    opt_ne_fill = PatternFill('solid',
+                              fgColor=Color(theme=7, tint=-0.249977111117893))
+    tel_fill = PatternFill('solid',
+                           fgColor=Color(theme=6, tint=-0.249977111117893))
+
+    # Data fills (warna muda untuk kolom Δm & prediksi)
+    sunset_data_fill = PatternFill('solid',
+                                   fgColor=Color(theme=9, tint=0.3999755851924192))
+    opt_ne_data_fill = PatternFill('solid',
+                                   fgColor=Color(theme=7, tint=0.3999755851924192))
+    tel_data_fill = PatternFill('solid',
+                                fgColor=Color(theme=6, tint=0.3999755851924192))
+
+    green_fill = PatternFill('solid', fgColor='C6EFCE')
+    red_fill = PatternFill('solid', fgColor='FFC7CE')
+
+    # Ringkasan styles (tetap Arial)
+    ringkasan_hdr_font = Font(name='Arial', bold=True, size=11, color='FFFFFF')
+    ringkasan_hdr_fill = PatternFill('solid', fgColor='1F4E79')
+    ringkasan_data_font = Font(name='Arial', size=10)
+    ringkasan_border = Border(
+        left=Side('thin', 'B0B0B0'), right=Side('thin', 'B0B0B0'),
+        top=Side('thin', 'B0B0B0'), bottom=Side('thin', 'B0B0B0'))
+
+    # ═══ Sheet 1: Hasil Observasi ═══
+    ws = wb.active
+    ws.title = "Hasil Observasi"
+
+    # ── Row 1: Header grup (merged) + metadata kolom (merged 2 baris) ──
+    meta_headers = ['No', 'Tanggal', 'Lokasi', 'Lat', 'Lon', 'Elv',
+                    'Bulan Hijri', 'Time Zone']
+    for ci, h in enumerate(meta_headers, 1):
+        col_letter = get_column_letter(ci)
+        ws.merge_cells(f'{col_letter}1:{col_letter}2')
+        c = ws.cell(row=1, column=ci, value=h)
+        c.font = hdr_font
+        c.fill = meta_fill
+        c.alignment = center
+        c.border = thin_border
+
+    # Grup: Sunset (I1:U1)
+    ws.merge_cells('I1:U1')
+    c = ws.cell(row=1, column=9,
+                value='DATA VISIBILITAS HILAL NAKED EYE DAN TELESKOP SAAT SUNSET')
+    c.font = hdr_font; c.fill = sunset_fill
+    c.alignment = center_no_v; c.border = thin_border
+
+    # Grup: Optimal NE (V1:AE1)
+    ws.merge_cells('V1:AE1')
+    c = ws.cell(row=1, column=22,
+                value='DATA VISIBILITAS HILAL NAKED EYE WAKTU OPTIMAL ATAU BEST TIME')
+    c.font = hdr_font; c.fill = opt_ne_fill
+    c.alignment = center_no_v; c.border = thin_border
+
+    # Grup: Teleskop (AF1:AS1)
+    ws.merge_cells('AF1:AS1')
+    c = ws.cell(row=1, column=32,
+                value='DATA VISIBILITAS HILAL BERBANTUAN TELESKOP BEST TIME')
+    c.font = hdr_font; c.fill = tel_fill
+    c.alignment = center_no_v; c.border = thin_border
+
+    # ── Row 2: Sub-header kolom per grup ──
+    # Sunset (I-U)
+    sunset_hdrs = {
+        9: 'Sunset Lokal', 10: 'Moon Alt (\u00b0)', 11: 'Elongasi (\u00b0)',
+        12: 'Phase Angle (\u00b0)', 13: 'Sky Bright (nL)', 14: 'Lum Hilal (nL)',
+        15: 'k_V', 16: 'RH (%)', 17: 'T (\u00b0C)',
     }
+    for ci, h in sunset_hdrs.items():
+        c = ws.cell(row=2, column=ci, value=h)
+        c.font = hdr_font; c.fill = sunset_fill
+        c.alignment = center; c.border = thin_border
 
-    def write_header(ws, row, headers):
-        for ci, h in enumerate(headers, 1):
-            c = ws.cell(row=row, column=ci, value=h)
-            c.font = styles['hdr_font']
-            c.fill = styles['hdr_fill']
-            c.alignment = styles['center']
-            c.border = styles['border']
+    # Δm NE sunset (R2:S2)
+    ws.merge_cells('R2:S2')
+    c = ws.cell(row=2, column=18, value='\u0394m NE')
+    c.font = hdr_font; c.fill = sunset_fill
+    c.alignment = center; c.border = thin_border
 
-    # ═══ Sheet 1: Hasil Per Observasi ═══
-    ws1 = wb.active
-    ws1.title = "Hasil Observasi"
-    ws1.sheet_properties.tabColor = '1F4E79'
+    # Δm Tel sunset (T2:U2)
+    ws.merge_cells('T2:U2')
+    c = ws.cell(row=2, column=20, value='\u0394m Tel ')
+    c.font = hdr_font; c.fill = sunset_fill
+    c.alignment = center; c.border = thin_border
 
-    # Kolom dikelompokkan:
-    #   [A] Metadata Lokasi & Observasi
-    #   [B] SAAT SUNSET: Waktu → Astronomis → Atmosfer → Visibilitas Margin
-    #   [C] OPTIMAL: Waktu → Astronomis → Visibilitas Margin → Durasi
-    #   [D] Prediksi & Validasi
-    headers1 = [
-        # ── [A] Metadata ──
-        'No', 'Tanggal', 'Lokasi', 'Lat', 'Lon', 'Elv',
-        'Bulan Hijri',
-        # ── [B] Saat Sunset ──
-        'Sunset Lokal',
-        'Moon Alt Sunset (°)', 'Elongasi (°)', 'Lebar Sabit (arcmin)', 'Phase Angle (°)',
-        'Sky Bright (nL)', 'Lum Hilal (nL)',
-        'k_V', 'RH (%)', 'T (°C)',
-        f'Δm NE Sunset (F={F_NAKED_REF})',
-        f'Δm Tel Sunset (F={FIELD_FACTOR_REF})',
-        # ── [C] Optimal NE ──
-        'Waktu Opt NE', 'Moon Alt Opt NE (°)',
-        'Elong Opt NE (°)',
-        'Sky Bright Opt NE (nL)', 'Lum Hilal Opt NE (nL)',
-        'k_V Opt NE', 'RH Opt NE (%)', 'T Opt NE (°C)',
-        'Δm NE Opt', 'Durasi Vis NE (mnt)',
-        # ── [C] Optimal Teleskop ──
-        'Waktu Opt Tel', 'Moon Alt Opt Tel (°)',
-        'Elong Opt Tel (°)',
-        'Sky Bright Opt Tel (nL)', 'Lum Hilal Opt Tel (nL)',
-        'k_V Opt Tel', 'RH Opt Tel (%)', 'T Opt Tel (°C)',
-        'Δm Tel Opt', 'Tel Gain Opt', 'Durasi Vis Tel (mnt)',
-        # ── [D] Observasi, Prediksi & Validasi ──
-        'Pred NE', 'Obs Tel (Y/N)', 'Pred Tel', 'Cocok Tel?',
-    ]
-    write_header(ws1, 1, headers1)
+    # Optimal NE (V-AE)
+    opt_ne_hdrs = {
+        22: 'Best Time NE', 23: 'Moon Alt (\u00b0)', 24: 'Elongasi (\u00b0)',
+        25: 'Sky Bright (nL)', 26: 'Lum Hilal (nL)',
+        27: 'k_V', 28: 'RH (%)', 29: 'T (\u00b0C)',
+    }
+    for ci, h in opt_ne_hdrs.items():
+        c = ws.cell(row=2, column=ci, value=h)
+        c.font = hdr_font; c.fill = opt_ne_fill
+        c.alignment = center; c.border = thin_border
 
-    # Indeks kolom untuk pewarnaan (1-indexed)
-    col_cocok_tel = headers1.index('Cocok Tel?') + 1
+    # Δm NE optimal (AD2:AE2)
+    ws.merge_cells('AD2:AE2')
+    c = ws.cell(row=2, column=30, value='\u0394m NE')
+    c.font = hdr_font; c.fill = opt_ne_fill
+    c.alignment = center; c.border = thin_border
 
-    for i, r in enumerate(results, 2):
+    # Teleskop (AF-AS)
+    tel_hdrs = {
+        32: 'Best Time Tel', 33: 'Moon Alt (\u00b0)', 34: 'Elongasi (\u00b0)',
+        35: 'Sky Bright (nL)', 36: 'Lum Hilal (nL)',
+        37: 'k_V', 38: 'RH (%)', 39: 'T (\u00b0C)',
+        40: 'Tel Gain Opt', 41: 'Leg time (mnt)',
+        44: 'Observasi Tel', 45: 'Correct',
+    }
+    for ci, h in tel_hdrs.items():
+        c = ws.cell(row=2, column=ci, value=h)
+        c.font = hdr_font; c.fill = tel_fill
+        c.alignment = center; c.border = thin_border
+
+    # Δm Tel teleskop (AP2:AQ2)
+    ws.merge_cells('AP2:AQ2')
+    c = ws.cell(row=2, column=42, value='\u0394m Tel')
+    c.font = hdr_font; c.fill = tel_fill
+    c.alignment = center; c.border = thin_border
+
+    # ── Helper functions ──
+    def _parse_time(time_str):
+        """Parse string waktu ke datetime.time."""
+        if not time_str:
+            return None
+        try:
+            s = str(time_str).strip()
+            if ' ' in s:
+                time_part = s.split(' ')[1].split('+')[0].split('-')[0]
+            else:
+                time_part = s
+            parts = time_part.split(':')
+            return dt_time(int(parts[0]), int(parts[1]),
+                           int(parts[2]) if len(parts) > 2 else 0)
+        except Exception:
+            return None
+
+    def _tz_offset(lon):
+        """UTC offset zona waktu Indonesia dari bujur."""
+        if lon < 115:
+            return 7   # WIB
+        elif lon < 135:
+            return 8   # WITA
+        return 9       # WIT
+
+    # ── Data rows (mulai baris 3) ──
+    # Kolom yang diberi warna Δm data
+    SUNSET_DM_COLS = {18, 19, 20, 21}
+    OPT_NE_DM_COLS = {30, 31}
+    TEL_DM_COLS = {42, 43, 44}
+
+    for i, r in enumerate(results, 3):
         obs_str = "Y" if r['observed'] else "N"
-        dm_ne = r.get('delta_m_ne_opt', -99)
-        dm_tel = r.get('delta_m_tel_opt', -99)
-        pred_ne = "Y" if dm_ne > 0 else "N"
-        pred_tel = "Y" if dm_tel > 0 else "N"
-        cocok_tel = "✓" if pred_tel == obs_str else "✗"
+        dm_ne_sun = r.get('delta_m_ne_sunset', -99)
+        dm_tel_sun = r.get('delta_m_tel_sunset', -99)
+        dm_ne_opt = r.get('delta_m_ne_opt', -99)
+        dm_tel_opt = r.get('delta_m_tel_opt', -99)
+        pred_ne_sun = "Y" if dm_ne_sun > 0 else "N"
+        pred_tel_sun = "Y" if dm_tel_sun > 0 else "N"
+        pred_ne_opt = "Y" if dm_ne_opt > 0 else "N"
+        pred_tel_opt = "Y" if dm_tel_opt > 0 else "N"
+        cocok = "\u2713" if pred_tel_opt == obs_str else "\u2717"
 
-        row_data = [
-            # ── [A] Metadata ──
-            r['no'], r['tanggal_obs'], r['nama'],
-            r.get('lat', 0), r.get('lon', 0), r.get('elv', 0),
-            f"{r.get('bulan_hijri', 0)}/{r.get('tahun_hijri', 0)}",
-            # ── [B] Saat Sunset ──
-            r.get('sunset_local', ''),
-            round(r.get('moon_alt_sunset', 0), 4),
-            round(r.get('elongation', 0), 4),
-            round(r.get('moon_width', 0) * 60.0, 4),
-            round(r.get('phase_angle', 0), 4),
-            f"{r.get('sky_brightness_nl', 0):.4e}",
-            f"{r.get('luminansi_hilal_nl', 0):.4e}",
-            round(r.get('k_v', 0), 4),
-            round(r.get('rh', 0), 2),
-            round(r.get('temperature', 0), 2),
-            round(r.get('delta_m_ne_sunset', -99), 4),
-            round(r.get('delta_m_tel_sunset', -99), 4),
-            # ── [C] Optimal NE ──
-            r.get('optimal_time_ne', ''),
-            round(r.get('optimal_moon_alt_ne', 0), 4),
-            round(r.get('opt_ne_elongation', 0), 4),
-            f"{r.get('opt_ne_sky_brightness_nl', 0):.4e}",
-            f"{r.get('opt_ne_luminansi_hilal_nl', 0):.4e}",
-            round(r.get('opt_ne_k_v', 0), 4),
-            round(r.get('opt_ne_rh', 0), 2),
-            round(r.get('opt_ne_temperature', 0), 2),
-            round(dm_ne, 4),
-            round(r.get('vis_duration_ne', 0), 2),
-            # ── [C] Optimal Teleskop ──
-            r.get('optimal_time_tel', ''),
-            round(r.get('optimal_moon_alt_tel', 0), 4),
-            round(r.get('opt_tel_elongation', 0), 4),
-            f"{r.get('opt_tel_sky_brightness_nl', 0):.4e}",
-            f"{r.get('opt_tel_luminansi_hilal_nl', 0):.4e}",
-            round(r.get('opt_tel_k_v', 0), 4),
-            round(r.get('opt_tel_rh', 0), 2),
-            round(r.get('opt_tel_temperature', 0), 2),
-            round(dm_tel, 4),
-            round(r.get('telescope_gain_opt', 0), 4),
-            round(r.get('vis_duration_tel', 0), 2),
-            # ── [D] Observasi, Prediksi & Validasi ──
-            pred_ne, obs_str, pred_tel, cocok_tel,
-        ]
+        row_data = {
+            # Metadata (A-H)
+            1: r['no'],
+            2: r['tanggal_obs'],
+            3: r['nama'],
+            4: r.get('lat', 0),
+            5: r.get('lon', 0),
+            6: r.get('elv', 0),
+            7: f"{r.get('bulan_hijri', 0)}/{r.get('tahun_hijri', 0)}",
+            8: _tz_offset(r.get('lon', 0)),
+            # Sunset (I-U)
+            9: _parse_time(r.get('sunset_local', '')),
+            10: round(r.get('moon_alt_sunset', 0), 4),
+            11: round(r.get('elongation', 0), 4),
+            12: round(r.get('phase_angle', 0), 4),
+            13: f"{r.get('sky_brightness_nl', 0):.4e}",
+            14: f"{r.get('luminansi_hilal_nl', 0):.4e}",
+            15: round(r.get('k_v', 0), 4),
+            16: round(r.get('rh', 0), 2),
+            17: round(r.get('temperature', 0), 2),
+            18: round(dm_ne_sun, 4),
+            19: pred_ne_sun,
+            20: round(dm_tel_sun, 4),
+            21: pred_tel_sun,
+            # Optimal NE (V-AE)
+            22: _parse_time(r.get('optimal_time_ne', '')),
+            23: round(r.get('optimal_moon_alt_ne', 0), 4),
+            24: round(r.get('opt_ne_elongation', 0), 4),
+            25: f"{r.get('opt_ne_sky_brightness_nl', 0):.4e}",
+            26: f"{r.get('opt_ne_luminansi_hilal_nl', 0):.4e}",
+            27: round(r.get('opt_ne_k_v', 0), 4),
+            28: round(r.get('opt_ne_rh', 0), 2),
+            29: round(r.get('opt_ne_temperature', 0), 2),
+            30: round(dm_ne_opt, 4),
+            31: pred_ne_opt,
+            # Teleskop (AF-AS)
+            32: _parse_time(r.get('optimal_time_tel', '')),
+            33: round(r.get('optimal_moon_alt_tel', 0), 4),
+            34: round(r.get('opt_tel_elongation', 0), 4),
+            35: f"{r.get('opt_tel_sky_brightness_nl', 0):.4e}",
+            36: f"{r.get('opt_tel_luminansi_hilal_nl', 0):.4e}",
+            37: round(r.get('opt_tel_k_v', 0), 4),
+            38: round(r.get('opt_tel_rh', 0), 2),
+            39: round(r.get('opt_tel_temperature', 0), 2),
+            40: round(r.get('telescope_gain_opt', 0), 4),
+            41: int(round(r.get('vis_duration_tel', 0))),
+            42: round(dm_tel_opt, 4),
+            43: pred_tel_opt,
+            44: obs_str,
+            45: cocok,
+        }
 
-        for ci, val in enumerate(row_data, 1):
-            c = ws1.cell(row=i, column=ci, value=val)
-            c.font = styles['data_font']
-            c.alignment = styles['center'] if ci != 3 else styles['left']
-            c.border = styles['border']
+        for ci, val in row_data.items():
+            c = ws.cell(row=i, column=ci, value=val)
+            c.font = data_font
+            c.alignment = left_align if ci == 3 else center
+            c.border = thin_border_no_top
 
-            # Warnai kolom "Cocok Tel?"
-            if ci == col_cocok_tel:
-                c.fill = styles['green'] if cocok_tel == "✓" else styles['red']
+            # Format waktu
+            if ci in (9, 22, 32) and isinstance(val, dt_time):
+                c.number_format = 'h:mm:ss'
 
-            # Tandai sentinel -99 dengan warna kuning
-            if isinstance(val, (int, float)) and val <= -90:
-                c.fill = styles['yellow']
+            # Warna Δm data
+            if ci in SUNSET_DM_COLS:
+                c.fill = sunset_data_fill
+            elif ci in OPT_NE_DM_COLS:
+                c.fill = opt_ne_data_fill
+            elif ci in TEL_DM_COLS:
+                c.fill = tel_data_fill
 
-    # Auto-width
-    for col_idx in range(1, len(headers1) + 1):
-        max_len = len(str(headers1[col_idx - 1]))
-        for row_idx in range(2, len(results) + 2):
-            val = ws1.cell(row=row_idx, column=col_idx).value
-            if val:
-                max_len = max(max_len, len(str(val)))
-        ws1.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 30)
-    ws1.freeze_panes = 'A2'
+            # Kolom Correct
+            if ci == 45:
+                c.fill = green_fill if cocok == "\u2713" else red_fill
+
+    # ── Column widths ──
+    col_widths = {
+        'A': 4, 'B': 12, 'C': 30, 'D': 11, 'E': 12, 'F': 7,
+        'G': 13, 'H': 7.57,
+        'I': 14.29, 'J': 12.71, 'K': 14, 'L': 17, 'M': 13,
+        'N': 16, 'O': 8, 'P': 13, 'Q': 13, 'R': 9.29, 'S': 4,
+        'T': 9.29, 'U': 4.43,
+        'V': 14.57, 'W': 12.86, 'X': 11.86, 'Y': 15.71, 'Z': 15,
+        'AA': 8.29, 'AB': 9.14, 'AC': 7.57, 'AD': 9, 'AE': 3.86,
+        'AF': 14.71, 'AG': 12.86, 'AH': 11.86, 'AI': 15.71,
+        'AJ': 15, 'AK': 7.29, 'AL': 9, 'AM': 7.43, 'AN': 13.29,
+        'AO': 15.14, 'AP': 8.43, 'AQ': 4.29, 'AR': 14.43, 'AS': 8.29,
+    }
+    for col, width in col_widths.items():
+        ws.column_dimensions[col].width = width
+
+    ws.freeze_panes = 'A3'
 
     # ═══ Sheet 2: Ringkasan ═══
     ws2 = wb.create_sheet("Ringkasan")
@@ -647,9 +784,9 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
     ws2.column_dimensions['A'].width = 35
     ws2.column_dimensions['B'].width = 25
 
-    # Hitung kecocokan (observasi = data teleskop saja)
     valid = [r for r in results if r.get('success', False)]
-    n_match_tel = sum(1 for r in valid if (r.get('delta_m_tel_opt', -99) > 0) == r['observed'])
+    n_match_tel = sum(1 for r in valid
+                      if (r.get('delta_m_tel_opt', -99) > 0) == r['observed'])
 
     summary_data = [
         ("KONFIGURASI", ""),
@@ -667,32 +804,34 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
         ("Total Observasi", len(results)),
         ("Observasi Berhasil", len(valid)),
         ("Observasi Terlihat (Y)", sum(1 for r in results if r['observed'])),
-        ("Observasi Tidak Terlihat (N)", sum(1 for r in results if not r['observed'])),
+        ("Observasi Tidak Terlihat (N)",
+         sum(1 for r in results if not r['observed'])),
         ("", ""),
         ("KECOCOKAN PREDIKSI TELESKOP vs OBSERVASI", ""),
-        ("Kecocokan Teleskop", f"{n_match_tel}/{len(valid)} ({n_match_tel/len(valid):.1%})" if valid else "N/A"),
+        ("Kecocokan Teleskop",
+         f"{n_match_tel}/{len(valid)} ({n_match_tel/len(valid):.1%})"
+         if valid else "N/A"),
     ]
 
     for i, (label, val) in enumerate(summary_data, 1):
         cl = ws2.cell(row=i, column=1, value=label)
         cv = ws2.cell(row=i, column=2, value=val)
         if label and not val and val != 0:
-            cl.font = styles['bold_font']
-            cl.fill = styles['hdr_fill']
-            cl.font = styles['hdr_font']
-            cv.fill = styles['hdr_fill']
+            cl.font = ringkasan_hdr_font
+            cl.fill = ringkasan_hdr_fill
+            cv.fill = ringkasan_hdr_fill
         else:
-            cl.font = styles['data_font']
-            cv.font = styles['data_font']
-        cl.border = styles['border']
-        cv.border = styles['border']
+            cl.font = ringkasan_data_font
+            cv.font = ringkasan_data_font
+        cl.border = ringkasan_border
+        cv.border = ringkasan_border
 
     # Save
     out_dir = os.path.dirname(filepath)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
     wb.save(filepath)
-    print(f"\n  ✓ Excel disimpan: {filepath}")
+    print(f"\n  \u2713 Excel disimpan: {filepath}")
 
 
 # ═══════════════════════════════════════════════════════════════════
