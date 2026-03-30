@@ -558,8 +558,8 @@ class HilalVisibilityCalculator:
             local_datetime=sunset_local
         )
         
-        # Semidiameter bulan
-        _, _, parallax, SD = moon_illumination_width_local(
+        # Semidiameter dan Lebar bulan
+        _, moon_width, parallax, SD = moon_illumination_width_local(
             self.timezone_str,
             location=self.location,
             local_datetime=sunset_local
@@ -573,7 +573,8 @@ class HilalVisibilityCalculator:
             'moon_az': moon_az,
             'elongation': elongation,
             'phase_angle': phase_angle,
-            'moon_semidiameter': moon_semidiameter
+            'moon_semidiameter': float(moon_semidiameter) if moon_semidiameter is not None else 0.0,
+            'moon_width': float(moon_width) if moon_width is not None else 0.0
         }
     
     def hitung_sky_brightness_schaefer(self,
@@ -735,7 +736,6 @@ class HilalVisibilityCalculator:
                                      n_surfaces: int = 6,
                                      central_obstruction: float = 0.0,
                                      observer_age: float = 22.0,
-                                     seeing: float = 3.0,
                                      field_factor: float = 2.4) -> Tuple[float, float, float, float, float]:
         """
         Menghitung visibilitas hilal melalui teleskop.
@@ -770,8 +770,6 @@ class HilalVisibilityCalculator:
             Diameter obstruksi pusat (mm, default: 0.0 untuk refraktor)
         observer_age : float
             Usia pengamat (tahun, default: 22.0)
-        seeing : float
-            Ukuran seeing disk (arcseconds, default: 3.0)
         field_factor : float
             Personal/kondisi lapangan field factor F (default: 2.4)
 
@@ -805,8 +803,7 @@ class HilalVisibilityCalculator:
             M=magnification,
             age=observer_age,
             t1=transmission,
-            n=n_surfaces,
-            theta=seeing
+            n=n_surfaces
         )
 
         # ── Langkah 3: Weber contrast (dipertahankan, Crumey Eq. 76) ─────
@@ -1296,6 +1293,18 @@ class HilalVisibilityCalculator:
             rasio_kontras_tel = c_th_tel = delta_m_tel = 0.0
             telescope_gain = 0.0
 
+        # Simpan parameter teleskop yang digunakan
+        self.hasil['tel_params'] = {
+            'aperture': aperture,
+            'magnification': magnification,
+            'central_obstruction': telescope_kwargs.get('central_obstruction', 0.0),
+            'transmission': telescope_kwargs.get('transmission', 0.95),
+            'n_surfaces': telescope_kwargs.get('n_surfaces', 6),
+            'observer_age': telescope_kwargs.get('observer_age', 22.0),
+            'field_factor': telescope_kwargs.get('field_factor', 2.4),
+        }
+        self.hasil['F_naked'] = F_naked
+
         # Simpan semua hasil termasuk data posisi lengkap
         self.hasil.update({
             # Data posisi matahari
@@ -1307,6 +1316,7 @@ class HilalVisibilityCalculator:
             'elongation': posisi['elongation'],
             'phase_angle': posisi['phase_angle'],
             'moon_semidiameter': posisi['moon_semidiameter'],
+            'moon_width': posisi['moon_width'],
             # Data perhitungan (saat sunset)
             'luminansi_hilal_nl': luminansi_hilal_nl,
             'sky_brightness_nl': sky_brightness_nl,
@@ -1436,6 +1446,9 @@ class HilalVisibilityCalculator:
             print(f"  Phase Angle           : {deg_to_dms(self.hasil['phase_angle'])}")
         if 'moon_semidiameter' in self.hasil:
             print(f"  Semidiameter Bulan    : {deg_to_dms(float(self.hasil['moon_semidiameter']))}")
+        if 'moon_width' in self.hasil:
+            width_arcmin = self.hasil['moon_width'] * 60.0
+            print(f"  Lebar Sabit Bulan     : {width_arcmin:.3f} arcmin")
         
         # === VISIBILITAS HILAL NAKED EYE (Crumey 2014) ===
         print(f"\n{'='*22} VISIBILITAS HILAL NAKED EYE {'='*21}")
@@ -1840,6 +1853,8 @@ class HilalVisibilityCalculator:
         if 'moon_semidiameter' in self.hasil:
             row = wdr(row, 'Semidiameter Bulan', deg_to_dms(float(self.hasil['moon_semidiameter'])))
             row = wdr(row, 'Semidiameter Bulan (°)', f"{float(self.hasil['moon_semidiameter']):.6f}")
+        if 'moon_width' in self.hasil:
+            row = wdr(row, 'Lebar Sabit Bulan (arcmin)', f"{self.hasil['moon_width']*60.0:.6f}")
         row += 1
 
         # ===================== VISIBILITAS NAKED EYE =====================
@@ -2094,6 +2109,7 @@ class HilalVisibilityCalculator:
         ws.column_dimensions['A'].width = 30
         ws.column_dimensions['B'].width = 50
 
+        tel = self.hasil.get('tel_params', {})
         info_data = [
             ('Program', 'Perhitungan Visibilitas Hilal'),
             ('Model Sky Brightness', 'Schaefer (1993)'),
@@ -2103,6 +2119,17 @@ class HilalVisibilityCalculator:
             ('Mode Perhitungan', self.hasil.get('mode', 'sunset')),
             ('Tanggal Eksekusi', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
             ('Catatan Schaefer', 'Moonlight excluded (Bulan = objek pengamatan)'),
+            ('', ''),
+            ('--- Parameter Teleskop ---', ''),
+            ('Aperture (mm)', f"{tel.get('aperture', 100.0)}"),
+            ('Magnification (x)', f"{tel.get('magnification', 50.0)}"),
+            ('Central Obstruction (mm)', f"{tel.get('central_obstruction', 0.0)}"),
+            ('Transmission', f"{tel.get('transmission', 0.95)}"),
+            ('N Surfaces', f"{tel.get('n_surfaces', 6)}"),
+            ('Observer Age', f"{tel.get('observer_age', 22.0)}"),
+            ('Seeing (arcsec)', f"{tel.get('seeing', 3.0)}"),
+            ('Field Factor Teleskop (F)', f"{tel.get('field_factor', 2.4)}"),
+            ('Field Factor Naked Eye (F)', f"{self.hasil.get('F_naked', 2.5)}"),
         ]
 
         for col_idx, header in enumerate(['Parameter', 'Nilai'], 1):
@@ -2114,7 +2141,7 @@ class HilalVisibilityCalculator:
 
         for i, (param, nilai) in enumerate(info_data, 2):
             cell_p = ws.cell(row=i, column=1, value=param)
-            cell_p.font = styles['data_font']
+            cell_p.font = styles['data_font_bold'] if param.startswith('---') else styles['data_font']
             cell_p.border = styles['thin_border']
             cell_v = ws.cell(row=i, column=2, value=nilai)
             cell_v.font = styles['data_font']
@@ -2384,18 +2411,130 @@ def _input_koreksi_bias(bias_t: float, bias_rh: float, sumber_atmosfer: str = 'e
     return bias_t, bias_rh
 
 
+def _input_koreksi_bias_multi(lokasi_list: list, sumber_atmosfer: str = 'era5') -> dict:
+    """
+    Input opsi koreksi bias untuk mode multi-lokasi.
+
+    Memberikan 3 opsi seperti mode tunggal:
+    1. Gunakan data bawaan per lokasi
+    2. Tanpa koreksi (semua bias = 0)
+    3. Input manual (nilai seragam untuk semua lokasi)
+
+    Parameters:
+    -----------
+    lokasi_list : list[dict]
+        Daftar lokasi yang dipilih
+    sumber_atmosfer : str
+        Sumber data atmosfer ('era5', 'merra2', 'bmkg', 'manual')
+
+    Returns:
+    --------
+    dict
+        Dictionary dengan key:
+        - 'opsi': 'bawaan' | 'tanpa' | 'manual'
+        - 'manual_bias_t': float (hanya jika opsi='manual')
+        - 'manual_bias_rh': float (hanya jika opsi='manual')
+    """
+    if sumber_atmosfer == 'manual':
+        print("\n--- LANGKAH 3.7: KOREKSI BIAS ---")
+        print("  ✓ Koreksi bias dilewati (sumber: Input Manual)")
+        return {'opsi': 'tanpa'}
+
+    label = sumber_atmosfer.upper().replace('MERRA2', 'MERRA-2')
+    print(f"\n--- LANGKAH 3.7: KOREKSI BIAS {label} ---")
+    print(f"  Koreksi bias digunakan untuk menyesuaikan data {label} dengan data observasi.")
+    print(f"  Definisi: bias = {label} - Observasi")
+    print()
+
+    # Tampilkan ringkasan bias bawaan lokasi
+    n_has_bias = sum(1 for lok in lokasi_list
+                     if lok.get('bias_t', 0.0) != 0.0 or lok.get('bias_rh', 0.0) != 0.0)
+    print(f"  [INFO] {n_has_bias}/{len(lokasi_list)} lokasi memiliki data bias bawaan")
+    if n_has_bias > 0:
+        for lok in lokasi_list:
+            bt = lok.get('bias_t', 0.0)
+            br = lok.get('bias_rh', 0.0)
+            if bt != 0.0 or br != 0.0:
+                nama = lok['nama']
+                if len(nama) > 30:
+                    nama = nama[:28] + '…'
+                print(f"         {nama:<30s}  bias_t={bt:+.1f}°C  bias_rh={br:+.1f}%")
+    print()
+
+    print("  Pilih opsi koreksi bias:")
+    print("  1. Gunakan data bawaan per lokasi (jika ada)")
+    print("  2. Tanpa koreksi (bias_t = 0, bias_rh = 0 untuk semua lokasi)")
+    print("  3. Input manual (nilai seragam untuk semua lokasi)")
+
+    try:
+        pilihan = input("\n  Pilih opsi (1/2/3) [enter=1]: ").strip() or "1"
+
+        if pilihan == "2":
+            print(f"  ✓ Menggunakan data {label} tanpa koreksi untuk semua lokasi")
+            return {'opsi': 'tanpa'}
+        elif pilihan == "3":
+            try:
+                bias_t_input = input("  Masukkan bias suhu (°C) [contoh: +1.5 atau -0.5, enter=0]: ").strip()
+                manual_bias_t = float(bias_t_input) if bias_t_input else 0.0
+                bias_rh_input = input("  Masukkan bias RH (%) [contoh: +5.0 atau -3.0, enter=0]: ").strip()
+                manual_bias_rh = float(bias_rh_input) if bias_rh_input else 0.0
+                print(f"  ✓ Koreksi bias seragam: T={manual_bias_t:+.1f}°C, RH={manual_bias_rh:+.1f}%")
+                print(f"    (diterapkan ke semua {len(lokasi_list)} lokasi)")
+                return {'opsi': 'manual', 'manual_bias_t': manual_bias_t, 'manual_bias_rh': manual_bias_rh}
+            except ValueError:
+                print("  [!] Input tidak valid. Menggunakan data bawaan per lokasi.")
+                return {'opsi': 'bawaan'}
+        else:  # Option 1 (default)
+            if n_has_bias == 0:
+                print(f"  ✓ Tidak ada lokasi dengan data bias. Menggunakan tanpa koreksi.")
+            else:
+                print(f"  ✓ Menggunakan data bias bawaan per lokasi ({n_has_bias} lokasi memiliki bias)")
+            return {'opsi': 'bawaan'}
+
+    except (ValueError, EOFError):
+        if n_has_bias == 0:
+            print(f"  ✓ Tidak ada lokasi dengan data bias. Menggunakan tanpa koreksi.")
+        else:
+            print(f"  ✓ Menggunakan data bias bawaan per lokasi")
+        return {'opsi': 'bawaan'}
+
+
+def _resolve_bias_t(lokasi: dict, shared_params: dict) -> float:
+    """Resolve nilai bias_t berdasarkan opsi bias yang dipilih user."""
+    bias_mode = shared_params.get('bias_mode', {})
+    opsi = bias_mode.get('opsi', 'bawaan')
+    if opsi == 'tanpa':
+        return 0.0
+    elif opsi == 'manual':
+        return bias_mode.get('manual_bias_t', 0.0)
+    else:  # 'bawaan'
+        return lokasi.get('bias_t', 0.0)
+
+
+def _resolve_bias_rh(lokasi: dict, shared_params: dict) -> float:
+    """Resolve nilai bias_rh berdasarkan opsi bias yang dipilih user."""
+    bias_mode = shared_params.get('bias_mode', {})
+    opsi = bias_mode.get('opsi', 'bawaan')
+    if opsi == 'tanpa':
+        return 0.0
+    elif opsi == 'manual':
+        return bias_mode.get('manual_bias_rh', 0.0)
+    else:  # 'bawaan'
+        return lokasi.get('bias_rh', 0.0)
+
+
 def _input_parameter_teleskop():
     """Input parameter teleskop dan field factor. Return dict parameter."""
     defaults = {
         'aperture': 100.0, 'magnification': 50.0, 'central_obstruction': 0.0,
-        'transmission': 0.95, 'n_surfaces': 6, 'observer_age': 22.0, 'seeing': 3.0,
+        'transmission': 0.95, 'n_surfaces': 6, 'observer_age': 22.0,
         'field_factor': 2.4, 'F_naked': 2.5
     }
 
     print("\n--- LANGKAH 4: PARAMETER TELESKOP & FIELD FACTOR ---")
     print("  Gunakan parameter default?")
     print("  (aperture=100mm, magnification=50x, obstruction=0mm,")
-    print("   transmission=0.95, n_surfaces=6, age=22.0, seeing=3.0,")
+    print("   transmission=0.95, n_surfaces=6, age=22.0,")
     print("   field_factor_teleskop=2.4, field_factor_naked_eye=2.5)")
 
     try:
@@ -2408,7 +2547,6 @@ def _input_parameter_teleskop():
             defaults['transmission'] = _get_input("  Transmisi per permukaan/lensa (0-1) [default: 0.95]: ", 0.95)
             defaults['n_surfaces'] = _get_input("  Jumlah permukaan optik [default: 6]: ", 6, int)
             defaults['observer_age'] = _get_input("  Usia pengamat (tahun) [default: 22.0]: ", 22.0)
-            defaults['seeing'] = _get_input("  Seeing atmosfir (arcsec) [default: 3.0]: ", 3.0)
             defaults['field_factor'] = _get_input("  Field factor teleskop (Crumey F) [default: 2.4]: ", 2.4)
             defaults['F_naked'] = _get_input("  Field factor naked eye (Crumey F) [default: 2.5]: ", 2.5)
             print(f"  ✓ Parameter kustom digunakan.")
@@ -2594,8 +2732,8 @@ def _run_multi_lokasi(lokasi_list: list, shared_params: dict) -> list:
                 bulan_hijri=shared_params['bulan_hijri'],
                 tahun_hijri=shared_params['tahun_hijri'],
                 delta_day_offset=shared_params['delta_day'],
-                bias_t=lokasi.get('bias_t', 0.0),
-                bias_rh=lokasi.get('bias_rh', 0.0),
+                bias_t=_resolve_bias_t(lokasi, shared_params),
+                bias_rh=_resolve_bias_rh(lokasi, shared_params),
                 sumber_atmosfer=shared_params['sumber_atmosfer'],
                 adm4_code=lokasi.get('adm4_code', ''),
                 manual_rh=shared_params.get('manual_rh', 80.0),
@@ -2670,7 +2808,7 @@ def _print_tabel_ringkasan_multi(results: list, shared_params: dict):
     print(f"{'═' * 110}")
 
     header = (f"{'No':>3} | {'Lokasi':<35} | {'Lat':>9} | {'Lon':>9} | "
-              f"{'Moon Alt':>8} | {'Elong':>7} | {'Δm NE':>8} | {'Δm Tel':>8} | "
+              f"{'Moon Alt':>8} | {'Elong':>7} | {'Lebar':>5} | {'Δm NE':>8} | {'Δm Tel':>8} | "
               f"{'NE':>6} | {'Tel':>6}")
     print(header)
     print("-" * 110)
@@ -2679,12 +2817,13 @@ def _print_tabel_ringkasan_multi(results: list, shared_params: dict):
         lok = r['lokasi']
         if not r['success']:
             print(f"{i:3d} | {lok['nama']:<35} | {lok['lat']:9.4f} | {lok['lon']:9.4f} | "
-                  f"{'ERROR':>8} | {'':>7} | {'':>8} | {'':>8} | {'':>6} | {'':>6}")
+                  f"{'ERROR':>8} | {'':>7} | {'':>5} | {'':>8} | {'':>8} | {'':>6} | {'':>6}")
             continue
 
         h = r['hasil']
         moon_alt = h.get('moon_alt', 0)
         elong = h.get('elongation', 0)
+        moon_width_arcmin = h.get('moon_width', 0) * 60.0
 
         if is_opt:
             dm_ne = h.get('optimal_delta_m_ne', h.get('delta_m_ne', -99))
@@ -2697,7 +2836,7 @@ def _print_tabel_ringkasan_multi(results: list, shared_params: dict):
         st_tel = "Y" if dm_tel > 0 else "N"
 
         print(f"{i:3d} | {lok['nama']:<35} | {lok['lat']:9.4f} | {lok['lon']:9.4f} | "
-              f"{moon_alt:8.3f} | {elong:7.3f} | {dm_ne:+8.3f} | {dm_tel:+8.3f} | "
+              f"{moon_alt:8.3f} | {elong:7.3f} | {moon_width_arcmin:5.2f} | {dm_ne:+8.3f} | {dm_tel:+8.3f} | "
               f"{st_ne:>6} | {st_tel:>6}")
 
     print(f"{'═' * 110}")
@@ -2774,7 +2913,7 @@ def _simpan_excel_multi(results: list, shared_params: dict, filepath: str) -> st
 
     headers = [
         'No', 'Lokasi', 'Lat (°)', 'Lon (°)', 'Elv (m)',
-        'Sunset', 'Moon Alt (°)', 'Elongasi (°)', 'Phase Angle (°)',
+        'Sunset', 'Moon Alt (°)', 'Elongasi (°)', 'Lebar Sabit (arcmin)', 'Phase Angle (°)',
         'RH (%)', 'T (°C)', 'k_V',
         'Sky Bright. (nL)', 'Lumin. Hilal (nL)',
         'Δm NE (sunset)', 'Δm Tel (sunset)',
@@ -2836,6 +2975,7 @@ def _simpan_excel_multi(results: list, shared_params: dict, filepath: str) -> st
             sunset_str,
             round(h.get('moon_alt', 0), 4),
             round(h.get('elongation', 0), 4),
+            round(h.get('moon_width', 0) * 60.0, 4),
             round(h.get('phase_angle', 0), 4),
             round(h.get('rh', 0), 2),
             round(h.get('temperature', 0), 2),
@@ -2917,7 +3057,6 @@ def _simpan_excel_multi(results: list, shared_params: dict, filepath: str) -> st
         ('Transmission', f"{tel.get('transmission', 0.95)}"),
         ('N Surfaces', f"{tel.get('n_surfaces', 6)}"),
         ('Observer Age', f"{tel.get('observer_age', 22.0)}"),
-        ('Seeing (arcsec)', f"{tel.get('seeing', 3.0)}"),
         ('Field Factor Teleskop (F)', f"{tel.get('field_factor', 2.4)}"),
         ('Field Factor Naked Eye (F)', f"{shared_params['F_naked']}"),
         ('', ''),
@@ -2956,8 +3095,8 @@ def _plot_multi_lokasi(results: list, shared_params: dict,
     """
     Plot perbandingan delta_m (visibility margin) antar lokasi.
 
-    Horizontal bar chart: lokasi di sumbu Y, delta_m di sumbu X.
-    Warna hijau jika terlihat (delta_m ≥ 0), merah jika tidak.
+    Lollipop chart dengan dark theme: lokasi di sumbu Y, delta_m di sumbu X.
+    Gradient warna berdasarkan nilai margin. Dual panel: Naked Eye & Teleskop.
 
     Parameters:
     -----------
@@ -2978,6 +3117,9 @@ def _plot_multi_lokasi(results: list, shared_params: dict,
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         import matplotlib.ticker as ticker
+        from matplotlib.colors import LinearSegmentedColormap
+        import matplotlib.patheffects as pe
+        import numpy as np
     except ImportError:
         print("  [!] matplotlib belum terinstall. Jalankan: pip install matplotlib")
         return False
@@ -2994,15 +3136,18 @@ def _plot_multi_lokasi(results: list, shared_params: dict,
     nama_list = []
     dm_ne_list = []
     dm_tel_list = []
+    lat_list = []
+    lon_list = []
 
     for r in reversed(success_results):  # reversed agar urutan atas→bawah sesuai input
         lok = r['lokasi']
         h = r['hasil']
-        # Singkat nama jika terlalu panjang
         nama = lok['nama']
         if len(nama) > 30:
             nama = nama[:28] + '…'
         nama_list.append(nama)
+        lat_list.append(lok.get('lintang', 0))
+        lon_list.append(lok.get('bujur', 0))
 
         if is_opt:
             dm_ne_list.append(h.get('optimal_delta_m_ne', h.get('delta_m_ne', -99)))
@@ -3012,54 +3157,189 @@ def _plot_multi_lokasi(results: list, shared_params: dict,
             dm_tel_list.append(h.get('delta_m_tel', -99))
 
     n = len(nama_list)
-    fig_height = max(6, n * 0.5 + 2)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, fig_height), sharey=True)
 
-    y_pos = range(n)
-    bar_height = 0.6
+    # ── Warna & Style ──
+    BG_COLOR = '#0f1923'
+    PANEL_BG = '#162230'
+    GRID_COLOR = '#1e3348'
+    TEXT_COLOR = '#e8edf3'
+    SUBTEXT_COLOR = '#8899aa'
+    ACCENT_GREEN = '#00e396'
+    ACCENT_RED = '#ff4560'
+    ACCENT_AMBER = '#feb019'
+    THRESHOLD_COLOR = '#3a5068'
 
-    # --- Panel kiri: Naked Eye ---
-    colors_ne = ['#4CAF50' if v >= 0 else '#F44336' for v in dm_ne_list]
-    ax1.barh(y_pos, dm_ne_list, height=bar_height, color=colors_ne, edgecolor='white', linewidth=0.5)
-    ax1.axvline(x=0, color='#333333', linewidth=1.2, linestyle='-')
-    ax1.set_yticks(y_pos)
-    ax1.set_yticklabels(nama_list, fontsize=9)
-    ax1.set_xlabel('Visibility Margin Δm (mag)', fontsize=11, fontweight='bold')
-    ax1.set_title('Naked Eye', fontsize=13, fontweight='bold', pad=10)
-    ax1.grid(axis='x', alpha=0.3, linestyle='--')
-    # Anotasi nilai
-    for j, v in enumerate(dm_ne_list):
-        ax1.text(v + (0.3 if v >= 0 else -0.3), j, f'{v:+.2f}',
-                 va='center', ha='left' if v >= 0 else 'right', fontsize=8)
+    def valor_color(v):
+        """Warna gradien berdasarkan nilai margin."""
+        if v >= 5:
+            return ACCENT_GREEN
+        elif v >= 0:
+            # Interpolasi hijau → kuning
+            t = v / 5.0
+            r_c = int(254 * (1 - t) + 0 * t)
+            g_c = int(176 * (1 - t) + 227 * t)
+            b_c = int(25 * (1 - t) + 150 * t)
+            return f'#{r_c:02x}{g_c:02x}{b_c:02x}'
+        elif v >= -5:
+            # Interpolasi kuning → merah
+            t = abs(v) / 5.0
+            r_c = int(254 * (1 - t) + 255 * t)
+            g_c = int(176 * (1 - t) + 69 * t)
+            b_c = int(25 * (1 - t) + 96 * t)
+            return f'#{r_c:02x}{g_c:02x}{b_c:02x}'
+        else:
+            return ACCENT_RED
 
-    # --- Panel kanan: Teleskop ---
-    colors_tel = ['#4CAF50' if v > 0 else '#F44336' for v in dm_tel_list]
-    ax2.barh(y_pos, dm_tel_list, height=bar_height, color=colors_tel, edgecolor='white', linewidth=0.5)
-    ax2.axvline(x=0, color='#333333', linewidth=1.2, linestyle='-')
-    ax2.set_xlabel('Visibility Margin Δm (mag)', fontsize=11, fontweight='bold')
-    ax2.set_title('Teleskop', fontsize=13, fontweight='bold', pad=10)
-    ax2.grid(axis='x', alpha=0.3, linestyle='--')
-    # Anotasi nilai
-    for j, v in enumerate(dm_tel_list):
-        ax2.text(v + (0.3 if v > 0 else -0.3), j, f'{v:+.2f}',
-                 va='center', ha='left' if v > 0 else 'right', fontsize=8)
+    # ── Layout ──
+    fig_height = max(7, n * 0.55 + 3.5)
+    fig = plt.figure(figsize=(18, fig_height), facecolor=BG_COLOR)
 
-    # Judul utama
+    # Grid: header row + main row, two columns
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 12],
+                          hspace=0.08, wspace=0.02,
+                          left=0.14, right=0.96, top=0.92, bottom=0.08)
+
+    # Header axes (untuk judul panel)
+    ax_h1 = fig.add_subplot(gs[0, 0], facecolor='none')
+    ax_h2 = fig.add_subplot(gs[0, 1], facecolor='none')
+    for ax_h in [ax_h1, ax_h2]:
+        ax_h.set_xlim(0, 1)
+        ax_h.set_ylim(0, 1)
+        ax_h.axis('off')
+
+    ax_h1.text(0.5, 0.3, 'NAKED EYE', fontsize=14, fontweight='bold',
+               color=TEXT_COLOR, ha='center', va='center',
+               fontfamily='monospace', alpha=0.95)
+    ax_h2.text(0.5, 0.3, 'TELESKOP', fontsize=14, fontweight='bold',
+               color=TEXT_COLOR, ha='center', va='center',
+               fontfamily='monospace', alpha=0.95)
+
+    ax1 = fig.add_subplot(gs[1, 0], facecolor=PANEL_BG)
+    ax2 = fig.add_subplot(gs[1, 1], facecolor=PANEL_BG, sharey=ax1)
+
+    y_pos = np.arange(n)
+
+    def draw_lollipop(ax, values, show_labels=True):
+        """Gambar lollipop chart dengan glow effect."""
+        # Threshold zone
+        ax.axvspan(-0.5, 0.5, color=THRESHOLD_COLOR, alpha=0.15, zorder=0)
+        ax.axvline(x=0, color=THRESHOLD_COLOR, linewidth=2, linestyle='-', zorder=1)
+
+        for j, v in enumerate(values):
+            c = valor_color(v)
+            # Garis lollipop
+            ax.plot([0, v], [j, j], color=c, linewidth=2.5, alpha=0.7, zorder=2,
+                    solid_capstyle='round')
+            # Titik ujung dengan glow
+            ax.scatter(v, j, color=c, s=120, zorder=4, edgecolors='none')
+            ax.scatter(v, j, color=c, s=280, zorder=3, edgecolors='none', alpha=0.15)
+
+            # Label nilai
+            offset = 0.4 if v >= 0 else -0.4
+            align = 'left' if v >= 0 else 'right'
+            ax.text(v + offset, j, f'{v:+.2f}',
+                    va='center', ha=align, fontsize=9, fontweight='bold',
+                    color=c, fontfamily='monospace',
+                    path_effects=[pe.withStroke(linewidth=2, foreground=BG_COLOR)])
+
+            # Ikon status
+            if v >= 0:
+                icon = '●'
+                icon_color = ACCENT_GREEN
+            else:
+                icon = '○'
+                icon_color = ACCENT_RED
+            status_x = 0.03 if v >= 0 else -0.03
+            # (ikon ditaruh di dekat garis 0)
+
+        # Garis horizontal pemisah antar lokasi (subtle)
+        for j in range(n):
+            ax.axhline(y=j, color=GRID_COLOR, linewidth=0.5, alpha=0.5, zorder=0)
+
+        # Styling sumbu
+        ax.set_xlabel('Visibility Margin  Δm  (mag)', fontsize=10,
+                       fontweight='bold', color=SUBTEXT_COLOR, labelpad=10)
+        ax.tick_params(axis='x', colors=SUBTEXT_COLOR, labelsize=9)
+        ax.tick_params(axis='y', colors=TEXT_COLOR, labelsize=9)
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(5))
+        ax.xaxis.set_minor_locator(ticker.MultipleLocator(1))
+        ax.grid(axis='x', which='major', color=GRID_COLOR, linewidth=0.8, alpha=0.6)
+        ax.grid(axis='x', which='minor', color=GRID_COLOR, linewidth=0.3, alpha=0.3)
+
+        # Hilangkan border
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        if show_labels:
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(nama_list, fontsize=10, color=TEXT_COLOR,
+                               fontfamily='sans-serif')
+        else:
+            plt.setp(ax.get_yticklabels(), visible=False)
+
+    # ── Gambar kedua panel ──
+    draw_lollipop(ax1, dm_ne_list, show_labels=True)
+    draw_lollipop(ax2, dm_tel_list, show_labels=False)
+
+    # Simetriskan sumbu X
+    all_dm = dm_ne_list + dm_tel_list
+    x_abs_max = max(abs(min(all_dm)), abs(max(all_dm)), 5)
+    x_limit = math.ceil(x_abs_max / 5) * 5 + 2
+    ax1.set_xlim(-x_limit, x_limit)
+    ax2.set_xlim(-x_limit, x_limit)
+    ax1.set_ylim(-0.7, n - 0.3)
+    ax2.set_ylim(-0.7, n - 0.3)
+
+    # Invert agar lokasi pertama di atas
+    ax1.invert_yaxis()
+
+    # ── Ringkasan statistik di bawah ──
+    n_vis_ne = sum(1 for v in dm_ne_list if v >= 0)
+    n_vis_tel = sum(1 for v in dm_tel_list if v >= 0)
+
+    summary_ne = f'{n_vis_ne}/{n} terlihat'
+    summary_tel = f'{n_vis_tel}/{n} terlihat'
+
+    ax1.text(0.5, -0.08, summary_ne, transform=ax1.transAxes,
+             fontsize=11, fontweight='bold', color=ACCENT_GREEN if n_vis_ne > 0 else ACCENT_RED,
+             ha='center', va='top', fontfamily='monospace')
+    ax2.text(0.5, -0.08, summary_tel, transform=ax2.transAxes,
+             fontsize=11, fontweight='bold', color=ACCENT_GREEN if n_vis_tel > 0 else ACCENT_RED,
+             ha='center', va='top', fontfamily='monospace')
+
+    # ── Judul utama ──
     bln = shared_params['bulan_hijri']
     thn = shared_params['tahun_hijri']
     sumber = shared_params['sumber_atmosfer'].upper()
-    mode_label = "Optimal" if is_opt else "Sunset"
-    fig.suptitle(
-        f'Perbandingan Visibilitas Hilal — Bulan {bln}/{thn} H\n'
-        f'Mode: {mode_label}  |  Atmosfer: {sumber}  |  {n} Lokasi',
-        fontsize=14, fontweight='bold', y=1.02
-    )
+    mode_label = "OPTIMAL" if is_opt else "SUNSET"
 
-    plt.tight_layout()
+    fig.text(0.55, 0.97,
+             f'PERBANDINGAN VISIBILITAS HILAL',
+             fontsize=17, fontweight='bold', color=TEXT_COLOR,
+             ha='center', va='center', fontfamily='monospace')
+    fig.text(0.55, 0.945,
+             f'Bulan {bln}/{thn} H   ·   Mode {mode_label}   ·   Atmosfer {sumber}   ·   {n} Lokasi',
+             fontsize=10, color=SUBTEXT_COLOR,
+             ha='center', va='center', fontfamily='monospace')
+
+    # ── Legenda kustom ──
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='none', markerfacecolor=ACCENT_GREEN,
+               markersize=10, label='Terlihat (Δm ≥ 0)'),
+        Line2D([0], [0], marker='o', color='none', markerfacecolor=ACCENT_RED,
+               markersize=10, label='Tidak Terlihat (Δm < 0)'),
+        Line2D([0], [0], marker='o', color='none', markerfacecolor=ACCENT_AMBER,
+               markersize=10, label='Marginal (Δm ≈ 0)'),
+    ]
+    fig.legend(handles=legend_elements, loc='lower center', ncol=3,
+               fontsize=9, frameon=False, labelcolor=SUBTEXT_COLOR,
+               bbox_to_anchor=(0.55, 0.01))
 
     if save_path:
         os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.savefig(save_path, dpi=200, bbox_inches='tight',
+                    facecolor=BG_COLOR, edgecolor='none')
         print(f"  [✓] Grafik perbandingan disimpan: {save_path}")
 
     plt.close(fig)
@@ -3233,11 +3513,7 @@ def _main_multi():
     sumber_atmosfer, _, manual_rh, manual_t, manual_p = _input_sumber_atmosfer('')
 
     # LANGKAH 3.7: Koreksi Bias
-    # Untuk multi-lokasi, gunakan bias bawaan masing-masing lokasi
-    if sumber_atmosfer != 'manual':
-        print(f"\n--- LANGKAH 3.7: KOREKSI BIAS ---")
-        print(f"  ✓ Mode multi-lokasi: menggunakan bias bawaan per lokasi")
-        print(f"    (setiap lokasi memiliki bias_t dan bias_rh dari database)")
+    bias_mode = _input_koreksi_bias_multi(lokasi_list, sumber_atmosfer)
 
     # LANGKAH 4: Parameter Teleskop & Field Factor (shared)
     tel_params = _input_parameter_teleskop()
@@ -3255,6 +3531,7 @@ def _main_multi():
         'manual_p': manual_p,
         'F_naked': F_naked,
         'tel_params': tel_params,
+        'bias_mode': bias_mode,
     }
 
     # JALANKAN BATCH
