@@ -9,7 +9,7 @@
 Model visibilitas hilal yang dikembangkan dalam skripsi ini berbeda
 secara fundamental dari model-model klasik (Yallop, Odeh, Sultan)
 karena secara eksplisit memperhitungkan faktor atmosfer lokal
-(kelembapan relatif dan temperatur → koefisien ekstingsi k_V)
+(kelembapan relatif dan temperatur yang berdampak ke penyerapan cahaya oleh partikel debu dan uap air di atmosfer, yang diwakili oleh koefisien ekstingsi k_V)
 di samping geometri bulan. Hipotesis sentral riset ini adalah:
 
 > **Faktor atmosfer lokal berperan signifikan dalam menentukan
@@ -23,7 +23,7 @@ Desain pengumpulan data secara sadar mengikuti prinsip ini:
   semidiameter) menjadi variabel terkontrol secara alami.
   Variasi antar lokasi dalam satu event murni mencerminkan
   perbedaan faktor lokal (RH, T, elevasi, airmass).
-- **Blocking by season**: Empat event disebar di musim berbeda
+- **Blocking by season**: tiga event disebar di musim berbeda
   sepanjang tahun (Juli 2022, Maret 2023, April 2024, Oktober 2024)
   untuk menangkap variasi musiman RH dan T di wilayah tropis
   Indonesia.

@@ -45,7 +45,7 @@ from core_crescent_visibility import (
 
 
 # ═══════════════════════════════════════════════════════════════════
-# KONFIGURASI GLOBAL
+# KONFIGURASI GLOBAL (nilai default)
 # ═══════════════════════════════════════════════════════════════════
 
 # --- Field factor referensi ---
@@ -71,6 +71,102 @@ SUMBER_ATMOSFER = "era5"    # "era5", "merra2", "manual"
 INTERVAL_MENIT = 1
 MIN_MOON_ALT = 2.0
 START_DELAY_MENIT = 1
+
+
+def _input_float(prompt: str, default: float) -> float:
+    """Minta input float dari user, return default jika kosong."""
+    try:
+        val = input(f"  {prompt} [{default}]: ").strip()
+        return float(val) if val else default
+    except ValueError:
+        print(f"    [!] Input tidak valid, menggunakan default: {default}")
+        return default
+
+
+def _input_int(prompt: str, default: int) -> int:
+    """Minta input int dari user, return default jika kosong."""
+    try:
+        val = input(f"  {prompt} [{default}]: ").strip()
+        return int(val) if val else default
+    except ValueError:
+        print(f"    [!] Input tidak valid, menggunakan default: {default}")
+        return default
+
+
+def _input_konfigurasi_interaktif():
+    """Konfigurasi global secara interaktif. Tekan Enter untuk pakai default."""
+    global F_NAKED_REF, FIELD_FACTOR_REF, TEL_PARAMS
+    global CALC_MODE, SUMBER_ATMOSFER
+    global INTERVAL_MENIT, MIN_MOON_ALT, START_DELAY_MENIT
+
+    print("\n" + "═" * 70)
+    print("  KONFIGURASI GLOBAL (tekan Enter untuk pakai nilai default)")
+    print("═" * 70)
+
+    # --- Mode perhitungan ---
+    print("\n  ── Mode Perhitungan ──")
+    print(f"  Pilihan: 1=optimal, 2=sunset")
+    mode_input = input(f"  Mode perhitungan [{CALC_MODE}]: ").strip().lower()
+    if mode_input == "2" or mode_input == "sunset":
+        CALC_MODE = "sunset"
+    elif mode_input == "1" or mode_input == "optimal":
+        CALC_MODE = "optimal"
+    elif mode_input:
+        print(f"    [!] Input tidak valid, menggunakan default: {CALC_MODE}")
+    print(f"    → Mode: {CALC_MODE}")
+
+    # --- Sumber atmosfer ---
+    print("\n  ── Sumber Data Atmosfer ──")
+    print(f"  Pilihan: 1=era5, 2=merra2, 3=manual")
+    atm_input = input(f"  Sumber atmosfer [{SUMBER_ATMOSFER}]: ").strip().lower()
+    if atm_input in ("1", "era5"):
+        SUMBER_ATMOSFER = "era5"
+    elif atm_input in ("2", "merra2"):
+        SUMBER_ATMOSFER = "merra2"
+    elif atm_input in ("3", "manual"):
+        SUMBER_ATMOSFER = "manual"
+    elif atm_input:
+        print(f"    [!] Input tidak valid, menggunakan default: {SUMBER_ATMOSFER}")
+    print(f"    → Sumber: {SUMBER_ATMOSFER}")
+
+    # --- Field factor ---
+    print("\n  ── Field Factor ──")
+    F_NAKED_REF = _input_float("F naked eye", F_NAKED_REF)
+    FIELD_FACTOR_REF = _input_float("F teleskop", FIELD_FACTOR_REF)
+
+    # --- Parameter teleskop ---
+    print("\n  ── Parameter Teleskop ──")
+    TEL_PARAMS['aperture'] = _input_float("Aperture (mm)", TEL_PARAMS['aperture'])
+    TEL_PARAMS['magnification'] = _input_float("Magnifikasi", TEL_PARAMS['magnification'])
+    TEL_PARAMS['transmission'] = _input_float("Transmisi/permukaan", TEL_PARAMS['transmission'])
+    TEL_PARAMS['n_surfaces'] = _input_int("Jumlah permukaan optik", int(TEL_PARAMS['n_surfaces']))
+    TEL_PARAMS['central_obstruction'] = _input_float("Central obstruction", TEL_PARAMS['central_obstruction'])
+    TEL_PARAMS['observer_age'] = _input_float("Usia pengamat (tahun)", TEL_PARAMS['observer_age'])
+    TEL_PARAMS['field_factor'] = FIELD_FACTOR_REF
+
+    # --- Interval loop optimal ---
+    print("\n  ── Interval Loop Optimal ──")
+    INTERVAL_MENIT = _input_int("Interval (menit)", INTERVAL_MENIT)
+    MIN_MOON_ALT = _input_float("Min altitude bulan (°)", MIN_MOON_ALT)
+    START_DELAY_MENIT = _input_int("Start delay (menit)", START_DELAY_MENIT)
+
+    # --- Ringkasan ---
+    print("\n" + "─" * 70)
+    print("  RINGKASAN KONFIGURASI:")
+    print(f"    Mode          : {CALC_MODE}")
+    print(f"    Atmosfer      : {SUMBER_ATMOSFER}")
+    print(f"    F naked eye   : {F_NAKED_REF}")
+    print(f"    F teleskop    : {FIELD_FACTOR_REF}")
+    print(f"    Aperture      : {TEL_PARAMS['aperture']} mm")
+    print(f"    Magnifikasi   : {TEL_PARAMS['magnification']}")
+    print(f"    Transmisi     : {TEL_PARAMS['transmission']}")
+    print(f"    N surfaces    : {TEL_PARAMS['n_surfaces']}")
+    print(f"    Obstruction   : {TEL_PARAMS['central_obstruction']}")
+    print(f"    Usia pengamat : {TEL_PARAMS['observer_age']} tahun")
+    print(f"    Interval      : {INTERVAL_MENIT} menit")
+    print(f"    Min moon alt  : {MIN_MOON_ALT}°")
+    print(f"    Start delay   : {START_DELAY_MENIT} menit")
+    print("─" * 70)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -273,6 +369,11 @@ def run_single_observation(obs: dict, verbose: bool = True) -> dict:
             print(f"\n  ⚠ TANGGAL TIDAK COCOK: model={tgl_model_str}, "
                   f"observasi={tanggal}")
 
+        # Ambil nilai datetime untuk parsing ke time
+        sunset_local_dt = hasil.get('sunset_local')
+        optimal_time_ne_dt = hasil.get('optimal_time_ne') if CALC_MODE == "optimal" else None
+        optimal_time_tel_dt = hasil.get('optimal_time_tel') if CALC_MODE == "optimal" else None
+
         # Kumpulkan hasil
         result = {
             # Metadata observasi
@@ -290,7 +391,7 @@ def run_single_observation(obs: dict, verbose: bool = True) -> dict:
             'success': True,
 
             # Hasil saat sunset
-            'sunset_local': str(hasil.get('sunset_local', '')),
+            'sunset_local': sunset_local_dt,
             'moon_alt_sunset': hasil.get('moon_alt', 0),
             'sun_alt_sunset': hasil.get('sun_alt', 0),
             'elongation': hasil.get('elongation', 0),
@@ -315,8 +416,8 @@ def run_single_observation(obs: dict, verbose: bool = True) -> dict:
             result.update({
                 'delta_m_ne_opt': hasil.get('optimal_delta_m_ne', -99.0),
                 'delta_m_tel_opt': hasil.get('optimal_delta_m_tel', -99.0),
-                'optimal_time_ne': str(hasil.get('optimal_time_ne', '')),
-                'optimal_time_tel': str(hasil.get('optimal_time_tel', '')),
+                'optimal_time_ne': optimal_time_ne_dt,
+                'optimal_time_tel': optimal_time_tel_dt,
                 'optimal_moon_alt_ne': hasil.get('optimal_moon_alt_ne', 0),
                 'optimal_moon_alt_tel': hasil.get('optimal_moon_alt_tel', 0),
                 'telescope_gain_opt': hasil.get('optimal_telescope_gain', 0),
@@ -341,8 +442,8 @@ def run_single_observation(obs: dict, verbose: bool = True) -> dict:
             result.update({
                 'delta_m_ne_opt': hasil.get('delta_m_ne', -99.0),
                 'delta_m_tel_opt': hasil.get('delta_m_tel', -99.0),
-                'optimal_time_ne': '',
-                'optimal_time_tel': '',
+                'optimal_time_ne': None,
+                'optimal_time_tel': None,
                 'optimal_moon_alt_ne': 0,
                 'optimal_moon_alt_tel': 0,
                 'telescope_gain_opt': 0,
@@ -387,6 +488,9 @@ def run_single_observation(obs: dict, verbose: bool = True) -> dict:
             'elv': obs['elv'],
             'observed': obs['observed'],
             'success': False,
+            'sunset_local': None,
+            'optimal_time_ne': None,
+            'optimal_time_tel': None,
             'delta_m_ne_sunset': -99.0,
             'delta_m_tel_sunset': -99.0,
             'delta_m_ne_opt': -99.0,
@@ -645,19 +749,26 @@ def save_to_excel(results: List[dict], filepath: str, bias_mode_str: str = "Data
     c.alignment = center; c.border = thin_border
 
     # ── Helper functions ──
-    def _parse_time(time_str):
-        """Parse string waktu ke datetime.time."""
-        if not time_str:
+    def _parse_time(time_val):
+        """Parse waktu (datetime, string, atau datetime.time) ke datetime.time."""
+        if not time_val:
             return None
         try:
-            s = str(time_str).strip()
+            # Jika sudah datetime.time, return langsung
+            if isinstance(time_val, dt_time):
+                return time_val
+            # Jika datetime object, ambil bagian time
+            if hasattr(time_val, 'hour') and hasattr(time_val, 'minute') and hasattr(time_val, 'second'):
+                return dt_time(time_val.hour, time_val.minute, time_val.second)
+            # Jika string, parse seperti sebelumnya
+            s = str(time_val).strip()
             if ' ' in s:
                 time_part = s.split(' ')[1].split('+')[0].split('-')[0]
             else:
                 time_part = s
             parts = time_part.split(':')
             return dt_time(int(parts[0]), int(parts[1]),
-                           int(parts[2]) if len(parts) > 2 else 0)
+                           round(float(parts[2])) if len(parts) > 2 else 0)
         except Exception:
             return None
 
@@ -869,16 +980,19 @@ def _input_koreksi_bias_batch() -> tuple:
 
 def main():
     """Entry point utama."""
-    # 0. Prompt Bias
+    # 0. Konfigurasi interaktif
+    _input_konfigurasi_interaktif()
+
+    # 1. Prompt Bias
     bias_mode, manual_bias_t, manual_bias_rh, bias_mode_str = _input_koreksi_bias_batch()
 
-    # 1. Batch run
+    # 2. Batch run
     results = run_batch(bias_mode, manual_bias_t, manual_bias_rh)
 
-    # 2. Tampilkan tabel
+    # 3. Tampilkan tabel
     print_results_table(results)
 
-    # 3. Simpan ke Excel
+    # 4. Simpan ke Excel
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, 'output')
 
@@ -887,7 +1001,7 @@ def main():
         f"Validasi_Crumey_{SUMBER_ATMOSFER}_{CALC_MODE}_{bias_tag}.xlsx")
     save_to_excel(results, excel_path, bias_mode_str)
 
-    # 4. Ringkasan akhir
+    # 5. Ringkasan akhir
     print(f"\n{'█' * 70}")
     print("  VALIDASI SELESAI")
     print(f"{'█' * 70}")
