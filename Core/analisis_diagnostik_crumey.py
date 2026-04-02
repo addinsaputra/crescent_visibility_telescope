@@ -2,26 +2,28 @@
 """
 ══════════════════════════════════════════════════════════════════════
 ANALISIS DIAGNOSTIK MODEL CRUMEY (2014)
-Tahap 4a-4d & 5c: Sensitivitas RH, Dekomposisi Error, Korelasi k_V
+Tahap 4.5: Analisis Sensitivitas dan Ketidakpastian
 ══════════════════════════════════════════════════════════════════════
 
 Script ini membaca output dari batch_validation_crumey.py, kemudian
 melakukan analisis diagnostik LOKAL (tanpa API call) untuk menentukan
 penyebab utama error prediksi.
 
-TAHAP YANG DICAKUP:
-  4a. Korelasi k_V dengan akurasi prediksi
-  4b. Sensitivitas Δm terhadap variasi RH
-  4c. Dekomposisi rantai error (sky brightness vs luminansi)
-  4d. Perbandingan antar lokasi per event
-  5c. Estimasi error bar Δm dari ketidakpastian RH
+TAHAP YANG DICAKUP (sesuai arsitektur_bab4_final.md):
+  4.5.1  Sensitivitas OAT terhadap RH + Kategorisasi FN (A/B/C)
+  4.5.2  Dekomposisi jalur error (Kastner vs Schaefer)
+  4.5.3  Error bar Δm dari ketidakpastian ERA5
+  4.5.4  Perbandingan ERA5 vs MERRA-2
 
-INPUT: Validasi_Crumey_29obs_era5_optimal.xlsx (dari batch run)
+INPUT:
+  - data_hilal_clean.csv    (ERA5, dari batch run)
+  - data_merra2_clean.csv   (MERRA-2, dari batch run)
+
 OUTPUT: Analisis_Diagnostik_Crumey.xlsx + plot
 
 CARA PAKAI:
   1. Letakkan di direktori Core/
-  2. Pastikan file Excel input ada di Core/output/
+  2. Pastikan file CSV input ada di Core/output/
   3. Jalankan: python analisis_diagnostik_crumey.py
 ══════════════════════════════════════════════════════════════════════
 """
@@ -32,9 +34,13 @@ import sys
 import warnings
 warnings.filterwarnings('ignore')
 
+# Fix Windows console encoding
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 # Pastikan Core/ di PATH
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,51 +57,118 @@ from full_rumus_crumey import (
 # KONFIGURASI
 # ═══════════════════════════════════════════════════════════════════
 
-INPUT_XLSX = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), 'output',
-    'Validasi_Crumey_29obs_era5_optimal.xlsx'
-)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'output')
+
+INPUT_ERA5 = os.path.join(OUTPUT_DIR, 'data_hilal_clean.csv')
+INPUT_MERRA2 = os.path.join(OUTPUT_DIR, 'data_merra2_clean.csv')
 
 # RH variations (percentage points, added to baseline)
 RH_DELTAS = [-30, -25, -20, -15, -10, -5, 0, +5, +10]
 
 # Telescope parameters (harus sama dengan batch run)
-TEL_APERTURE = 66.0     # mm
+TEL_APERTURE = 100.0     # mm
 TEL_MAG = 50.0
 TEL_TRANS = 0.95
 TEL_NSURFACES = 6
 TEL_OBSTRUCTION = 0.0
 TEL_AGE = 30.0
 
-# Field factors
-F_NAKED = 2.0
-F_TEL = 2.0  # phi = sqrt(2) * 1.0 * F_TEL
+# Field factors — F = 1.5 (optimal, sudah terkalibrasi; arsitektur §4.2)
+F_NAKED = 1.5
+F_TEL = 1.5
 
 # Moon semidiameter (default, ~0.26°)
 MOON_SD_DEG = 0.26
 
 
 # ═══════════════════════════════════════════════════════════════════
+# DATA LOADING
+# ═══════════════════════════════════════════════════════════════════
+
+def load_observation_data(filepath: str) -> pd.DataFrame:
+    """Baca CSV ERA5 dan kembalikan DataFrame dengan kolom standar.
+
+    CSV output dari batch run (data_hilal_clean.csv) memakai kolom flat:
+      No, Tanggal, Event, Lokasi, Lat, Lon, Elv, Bulan_Hijri,
+      Moon_Alt_Sunset, Elongasi_Sunset, W_arcmin, Phase_Angle,
+      Sky_Bright_Sunset, ..., Best_Time_Tel, Moon_Alt_BT, Elongasi_BT,
+      Sky_Bright_BT, Lum_Hilal_BT, kV_BT, RH_BT, T_BT, ...,
+      Dm_Tel_BT, Prediksi, Observasi
+    """
+    df_raw = pd.read_csv(filepath)
+
+    df = pd.DataFrame()
+    df['No'] = df_raw['No']
+    df['Tanggal'] = df_raw['Tanggal']
+    df['Lokasi'] = df_raw['Lokasi']
+    df['Lat'] = df_raw['Lat']
+    df['Lon'] = df_raw['Lon']
+    df['Elv'] = df_raw['Elv']
+
+    df['Phase Angle (°)'] = df_raw['Phase_Angle']
+    df['Lebar Sabit (arcmin)'] = df_raw['W_arcmin']
+
+    # Best Time section (dipakai untuk analisis)
+    df['Waktu Optimal Tel'] = df_raw['Best_Time_Tel']
+    df['Moon Alt (°)'] = df_raw['Moon_Alt_BT']
+    df['Elongasi (°)'] = df_raw['Elongasi_BT']
+    df['Sky Bright (nL)'] = df_raw['Sky_Bright_BT']
+    df['Lum Hilal (nL)'] = df_raw['Lum_Hilal_BT']
+    df['k_V'] = df_raw['kV_BT']
+    df['RH (%)'] = df_raw['RH_BT']
+    df['T (°C)'] = df_raw['T_BT']
+    df['Leg_Time_min'] = df_raw['Leg_Time_min']
+    df['Δm Tel Opt'] = df_raw['Dm_Tel_BT']
+    df['Obs (Y/N)'] = df_raw['Observasi']
+    df['Cocok?'] = (df_raw['Prediksi'] == df_raw['Observasi']).apply(
+        lambda x: '✓' if x else '✗')
+
+    return df
+
+
+def load_merra2_data(filepath: str) -> pd.DataFrame:
+    """Baca CSV MERRA-2 dan kembalikan DataFrame dengan kolom standar.
+
+    CSV MERRA-2 (data_merra2_clean.csv) memakai kolom:
+      No, Tanggal, Event, Lokasi, Moon_Alt_BT_M2, Elongasi_BT_M2,
+      Sky_Bright_BT_M2, Lum_Hilal_BT_M2, kV_BT_M2, RH_BT_M2,
+      T_BT_M2, Dm_Tel_BT_M2, Pred_M2, Observasi
+    """
+    df_raw = pd.read_csv(filepath)
+
+    df = pd.DataFrame()
+    df['No'] = df_raw['No']
+    df['Tanggal'] = df_raw['Tanggal']
+    df['Lokasi'] = df_raw['Lokasi']
+
+    df['Moon Alt (°)'] = df_raw['Moon_Alt_BT_M2']
+    df['Elongasi (°)'] = df_raw['Elongasi_BT_M2']
+    df['Sky Bright (nL)'] = df_raw['Sky_Bright_BT_M2']
+    df['Lum Hilal (nL)'] = df_raw['Lum_Hilal_BT_M2']
+    df['k_V'] = df_raw['kV_BT_M2']
+    df['RH (%)'] = df_raw['RH_BT_M2']
+    df['T (°C)'] = df_raw['T_BT_M2']
+    df['Δm Tel Opt'] = df_raw['Dm_Tel_BT_M2']
+    df['Obs (Y/N)'] = df_raw['Observasi']
+    df['Cocok?'] = (df_raw['Pred_M2'] == df_raw['Observasi']).apply(
+        lambda x: '✓' if x else '✗')
+
+    return df
+
+
+# ═══════════════════════════════════════════════════════════════════
 # FUNGSI UTILITAS
 # ═══════════════════════════════════════════════════════════════════
 
-def estimate_sun_alt_at_optimal(sunset_str: str, optimal_str: str) -> float:
+def estimate_sun_alt_at_optimal(leg_time_min: float) -> float:
     """Estimasi sun altitude di waktu optimal.
-    Matahari turun ~1°/4 menit setelah sunset di tropis."""
-    try:
-        from datetime import datetime
-        # Parse (handle timezone info)
-        sunset_clean = sunset_str.split('+')[0].split('.')[0]
-        optimal_clean = optimal_str.split('+')[0].split('.')[0]
-        fmt = '%Y-%m-%d %H:%M:%S'
-        dt_sunset = datetime.strptime(sunset_clean, fmt)
-        dt_optimal = datetime.strptime(optimal_clean, fmt)
-        delta_min = (dt_optimal - dt_sunset).total_seconds() / 60.0
-    except Exception:
-        delta_min = 7.0  # default: 7 menit setelah sunset
-
+    Matahari turun ~0.25°/menit setelah sunset di tropis.
+    leg_time_min: menit setelah sunset (dari kolom Leg_Time_min di CSV).
+    """
+    delta_min = max(leg_time_min if isinstance(leg_time_min, (int, float)) else 7.0, 0)
     # Sun descent rate: ~0.25°/menit di tropis saat sunset
-    return -0.833 - 0.25 * max(delta_min, 0)
+    return -0.833 - 0.25 * delta_min
 
 
 def estimate_azimuth_diff(elongation: float, sun_alt: float, moon_alt: float) -> float:
@@ -185,8 +258,7 @@ def compute_full_chain(row: pd.Series, rh_override: float) -> Dict[str, float]:
 
     # Estimasi sun_alt dan azimuth_diff
     sun_alt = estimate_sun_alt_at_optimal(
-        str(row.get('Sunset Lokal', '')),
-        str(row.get('Waktu Optimal Tel', ''))
+        row.get('Leg_Time_min', 7.0)
     )
     azisun = estimate_azimuth_diff(elongation, sun_alt, moon_alt)
 
@@ -239,68 +311,50 @@ def compute_full_chain(row: pd.Series, rh_override: float) -> Dict[str, float]:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════
-# TAHAP 4a: KORELASI k_V
-# ═══════════════════════════════════════════════════════════════════
+def classify_obs_type(obs_yn: str, cocok: str) -> str:
+    """Klasifikasi tipe observasi: TP, TN, FN, FP."""
+    if obs_yn == 'Y' and cocok == '✓':
+        return 'TP'
+    elif obs_yn == 'Y' and cocok != '✓':
+        return 'FN'
+    elif obs_yn == 'N' and cocok == '✓':
+        return 'TN'
+    else:
+        return 'FP'
 
-def analyze_kv_correlation(df: pd.DataFrame) -> pd.DataFrame:
-    """Analisis korelasi k_V dengan akurasi prediksi."""
-    print("\n" + "═" * 70)
-    print("TAHAP 4a: KORELASI k_V DENGAN AKURASI PREDIKSI")
-    print("═" * 70)
 
-    df['correct'] = df['Cocok?'] == '✓'
-    df['is_Y'] = df['Obs (Y/N)'] == 'Y'
-
-    # Statistik per kelompok
-    groups = {
-        'TN (benar N)': df[(~df['is_Y']) & (df['correct'])],
-        'FN (salah N)': df[(df['is_Y']) & (~df['correct'])],
-    }
-
-    rows = []
-    for label, sub in groups.items():
-        if len(sub) == 0:
-            continue
-        rows.append({
-            'Kelompok': label,
-            'N': len(sub),
-            'k_V mean': sub['k_V'].mean(),
-            'k_V std': sub['k_V'].std(),
-            'k_V min': sub['k_V'].min(),
-            'k_V max': sub['k_V'].max(),
-            'RH mean': sub['RH (%)'].mean(),
-            'RH std': sub['RH (%)'].std(),
-            'Δm Tel Opt mean': sub['Δm Tel Opt'].mean(),
-        })
-
-    result_df = pd.DataFrame(rows)
-    print(result_df.to_string(index=False))
-
-    # Per-event comparison
-    print("\n  Per-Event k_V Comparison (Y vs N):")
-    for tgl in df['Tanggal'].unique():
-        sub = df[df['Tanggal'] == tgl]
-        y_sub = sub[sub['is_Y']]
-        n_sub = sub[~sub['is_Y']]
-        if len(y_sub) == 0:
-            continue
-        print(f"\n  {tgl}: Y(n={len(y_sub)}) k_V={y_sub['k_V'].mean():.4f} ± {y_sub['k_V'].std():.4f} | "
-              f"RH={y_sub['RH (%)'].mean():.1f}%")
-        print(f"  {' '*11}N(n={len(n_sub)}) k_V={n_sub['k_V'].mean():.4f} ± {n_sub['k_V'].std():.4f} | "
-              f"RH={n_sub['RH (%)'].mean():.1f}%")
-
-    return result_df
+def categorize_fn(butuh_delta_rh) -> str:
+    """Kategorisasi FN sesuai arsitektur 4.5.1:
+      A (near-miss)  : |ΔRH| ≤ 5 pp
+      B (correctable): 5 < |ΔRH| ≤ 20 pp — dalam range bias ERA5
+      C (structural) : |ΔRH| > 20 pp atau tidak ada RH kritis
+    """
+    if not isinstance(butuh_delta_rh, (int, float)):
+        return 'C'
+    abs_drh = abs(butuh_delta_rh)
+    if abs_drh <= 5:
+        return 'A'
+    elif abs_drh <= 20:
+        return 'B'
+    else:
+        return 'C'
 
 
 # ═══════════════════════════════════════════════════════════════════
-# TAHAP 4b: SENSITIVITAS RH
+# 4.5.1 — SENSITIVITAS OAT TERHADAP RH
 # ═══════════════════════════════════════════════════════════════════
 
 def analyze_rh_sensitivity(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Variasikan RH dan ukur dampak pada Δm untuk semua observasi."""
+    """Variasikan RH dan ukur dampak pada Δm untuk semua observasi.
+
+    Sesuai arsitektur 4.5.1:
+    - Variasi ΔRH ∈ {-30,...,+10} pp
+    - Plot Δm vs ΔRH per observasi (terutama FN dan FP)
+    - Hitung RH kritis per FN (Δm = 0)
+    - Kategorisasi FN: A (near-miss), B (correctable), C (structural)
+    """
     print("\n" + "═" * 70)
-    print("TAHAP 4b: SENSITIVITAS Δm TERHADAP VARIASI RH")
+    print("4.5.1  SENSITIVITAS OAT Δm TERHADAP VARIASI RH")
     print("═" * 70)
 
     all_rows = []
@@ -310,11 +364,10 @@ def analyze_rh_sensitivity(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame
         obs_no = int(row['No'])
         rh_baseline = row['RH (%)']
         obs_yn = row['Obs (Y/N)']
-        is_FN = (obs_yn == 'Y') and (row['Cocok?'] == '✗')
+        tipe = classify_obs_type(obs_yn, row['Cocok?'])
 
         print(f"\n  Obs #{obs_no:2d} {row['Lokasi'][:30]:30s} "
-              f"({'FN' if is_FN else 'TN' if obs_yn == 'N' else 'TP'}) "
-              f"RH_base={rh_baseline:.1f}%")
+              f"({tipe}) RH_base={rh_baseline:.1f}%")
 
         dm_at_deltas = {}
         kv_at_deltas = {}
@@ -326,7 +379,6 @@ def analyze_rh_sensitivity(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame
 
             result = compute_full_chain(row, rh_test)
 
-            label = f"ΔRH={delta_rh:+d}"
             dm_at_deltas[delta_rh] = result['dm_tel']
             kv_at_deltas[delta_rh] = result['k_v']
 
@@ -334,7 +386,7 @@ def analyze_rh_sensitivity(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame
                 'No': obs_no,
                 'Lokasi': row['Lokasi'],
                 'Obs': obs_yn,
-                'Tipe': 'FN' if is_FN else ('TN' if obs_yn == 'N' else 'TP'),
+                'Tipe': tipe,
                 'RH_baseline': rh_baseline,
                 'ΔRH': delta_rh,
                 'RH_test': rh_test,
@@ -347,7 +399,7 @@ def analyze_rh_sensitivity(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame
             }
             all_rows.append(entry)
 
-        # Cari critical RH (Δm_tel = 0) via interpolasi
+        # Cari critical RH (Δm_tel = 0) via interpolasi linear
         deltas_sorted = sorted(dm_at_deltas.keys())
         critical_rh = None
         for i in range(len(deltas_sorted) - 1):
@@ -356,7 +408,6 @@ def analyze_rh_sensitivity(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame
             if dm1 <= -90 or dm2 <= -90:
                 continue
             if (dm1 <= 0 <= dm2) or (dm2 <= 0 <= dm1):
-                # Linear interpolation
                 frac = -dm1 / (dm2 - dm1) if (dm2 - dm1) != 0 else 0
                 critical_delta = d1 + frac * (d2 - d1)
                 critical_rh = rh_baseline + critical_delta
@@ -367,46 +418,89 @@ def analyze_rh_sensitivity(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame
         dm_minus20 = dm_at_deltas.get(-20, dm_at_deltas.get(-25, -99))
         improvement = dm_minus20 - dm_base if dm_base > -90 and dm_minus20 > -90 else 0
 
+        butuh_drh = (critical_rh - rh_baseline) if critical_rh else 'N/A'
+        kategori = categorize_fn(butuh_drh) if tipe == 'FN' else '-'
+
         critical_rows.append({
             'No': obs_no,
             'Lokasi': row['Lokasi'],
             'Obs': obs_yn,
-            'Tipe': 'FN' if is_FN else ('TN' if obs_yn == 'N' else 'TP'),
+            'Tipe': tipe,
             'RH_baseline': rh_baseline,
             'k_V_baseline': kv_at_deltas.get(0, 0),
             'Δm_Tel_baseline': dm_base,
             'Δm_Tel_RH-20': dm_minus20,
             'Improvement_20': improvement,
             'RH_kritis': critical_rh if critical_rh else 'N/A',
-            'Butuh_ΔRH': (critical_rh - rh_baseline) if critical_rh else 'N/A',
+            'Butuh_ΔRH': butuh_drh,
+            'Kategori_FN': kategori,
         })
 
         # Print ringkasan
         status = f"RH_kritis={critical_rh:.1f}%" if critical_rh else "di luar range"
+        kat_str = f"  [{kategori}]" if tipe == 'FN' else ""
         print(f"    Δm(base)={dm_base:+.2f}  Δm(RH-20)={dm_minus20:+.2f}  "
-              f"gain={improvement:+.2f}  {status}")
+              f"gain={improvement:+.2f}  {status}{kat_str}")
 
-    return pd.DataFrame(all_rows), pd.DataFrame(critical_rows)
+    critical_df = pd.DataFrame(critical_rows)
+
+    # ── Ringkasan Kategorisasi FN ──
+    fn_rows = critical_df[critical_df['Tipe'] == 'FN']
+    if len(fn_rows) > 0:
+        print("\n  ┌─────────────────────────────────────────────────┐")
+        print("  │         KATEGORISASI FALSE NEGATIVE (FN)        │")
+        print("  ├─────────────────────────────────────────────────┤")
+        for cat, desc in [('A', 'near-miss, |ΔRH| ≤ 5 pp'),
+                          ('B', 'correctable, 5 < |ΔRH| ≤ 20 pp'),
+                          ('C', 'structural, |ΔRH| > 20 pp')]:
+            n = sum(fn_rows['Kategori_FN'] == cat)
+            print(f"  │  Kategori {cat} ({desc}): {n}/{len(fn_rows)}")
+        print("  └─────────────────────────────────────────────────┘")
+
+        # Detail per FN
+        print("\n  Detail FN:")
+        for _, r in fn_rows.iterrows():
+            drh_str = f"{r['Butuh_ΔRH']:+.1f} pp" if isinstance(r['Butuh_ΔRH'], (int, float)) else "N/A"
+            print(f"    #{int(r['No']):2d} {r['Lokasi'][:25]:25s} "
+                  f"ΔRH={drh_str:>10s}  → Kategori {r['Kategori_FN']}")
+
+    return pd.DataFrame(all_rows), critical_df
 
 
 # ═══════════════════════════════════════════════════════════════════
-# TAHAP 4c: DEKOMPOSISI RANTAI ERROR
+# 4.5.2 — DEKOMPOSISI JALUR ERROR
 # ═══════════════════════════════════════════════════════════════════
 
 def analyze_error_decomposition(df: pd.DataFrame) -> pd.DataFrame:
-    """Dekomposisi: seberapa besar kontribusi sky brightness vs luminansi."""
+    """Dekomposisi: kontribusi jalur Kastner (luminansi) vs Schaefer (sky brightness).
+
+    Sesuai arsitektur 4.5.2:
+    - Dua jalur pengaruh kV:
+      Kastner: kV → ekstingsi → luminansi hilal
+      Schaefer: kV → sky brightness
+    - Teknik OAT: ubah kV hanya di satu jalur
+    - Hitung persentase kontribusi masing-masing
+    """
     print("\n" + "═" * 70)
-    print("TAHAP 4c: DEKOMPOSISI RANTAI ERROR")
+    print("4.5.2  DEKOMPOSISI JALUR ERROR (KASTNER vs SCHAEFER)")
     print("═" * 70)
 
-    fn_obs = df[(df['Obs (Y/N)'] == 'Y') & (df['Cocok?'] == '✗')]
+    fn_fp_obs = df[
+        ((df['Obs (Y/N)'] == 'Y') & (df['Cocok?'] != '✓')) |
+        ((df['Obs (Y/N)'] == 'N') & (df['Cocok?'] != '✓'))
+    ]
+    if len(fn_fp_obs) == 0:
+        print("  Tidak ada observasi FN/FP untuk didekomposisi.")
+        return pd.DataFrame()
+
     decomp_rows = []
 
-    for _, row in fn_obs.iterrows():
+    for _, row in fn_fp_obs.iterrows():
         obs_no = int(row['No'])
         rh_base = row['RH (%)']
+        tipe = classify_obs_type(row['Obs (Y/N)'], row['Cocok?'])
 
-        print(f"\n  Obs #{obs_no}: {row['Lokasi']}")
+        print(f"\n  Obs #{obs_no}: {row['Lokasi']} ({tipe})")
 
         # Baseline
         res_base = compute_full_chain(row, rh_base)
@@ -416,7 +510,7 @@ def analyze_error_decomposition(df: pd.DataFrame) -> pd.DataFrame:
         res_low = compute_full_chain(row, rh_low)
 
         # Skenario 2: Gunakan k_V rendah tapi B_sky dari baseline RH
-        # (isolasi efek k_V pada luminansi saja)
+        # (isolasi efek k_V pada luminansi saja — jalur Kastner)
         z = 90.0 - row['Moon Alt (°)']
         L_with_low_kv = hitung_luminansi_kastner(
             alpha=row['Phase Angle (°)'], r=MOON_SD_DEG, z=z, k=res_low['k_v']
@@ -426,6 +520,7 @@ def analyze_error_decomposition(df: pd.DataFrame) -> pd.DataFrame:
         )
 
         # Skenario 3: Gunakan B_sky rendah tapi L_hilal dari baseline k_V
+        # (isolasi efek k_V pada sky brightness — jalur Schaefer)
         res_only_B = compute_delta_m(
             res_base['L_hilal_nL'], res_low['B_sky_nL'], row['Phase Angle (°)'], 'telescope'
         )
@@ -439,6 +534,7 @@ def analyze_error_decomposition(df: pd.DataFrame) -> pd.DataFrame:
         decomp_rows.append({
             'No': obs_no,
             'Lokasi': row['Lokasi'],
+            'Tipe': tipe,
             'RH_base': rh_base,
             'RH_low': rh_low,
             'k_V_base': res_base['k_v'],
@@ -452,8 +548,8 @@ def analyze_error_decomposition(df: pd.DataFrame) -> pd.DataFrame:
                        if res_base['L_hilal_nL'] > 0 else 0,
             'Δm_base': res_base['dm_tel'],
             'Δm_full_change': dm_full_change,
-            'Δm_dari_L (k_V→Kastner)': dm_L_only,
-            'Δm_dari_B (k_V→Schaefer)': dm_B_only,
+            'Δm_dari_L (Kastner)': dm_L_only,
+            'Δm_dari_B (Schaefer)': dm_B_only,
             'Δm_interaksi': dm_interaction,
             'Kontribusi_L (%)': abs(dm_L_only) / abs(dm_full_change) * 100
                                 if abs(dm_full_change) > 0.001 else 0,
@@ -463,78 +559,50 @@ def analyze_error_decomposition(df: pd.DataFrame) -> pd.DataFrame:
 
         print(f"    k_V: {res_base['k_v']:.4f} → {res_low['k_v']:.4f} (Δ={res_low['k_v']-res_base['k_v']:+.4f})")
         print(f"    Δm_tel: {res_base['dm_tel']:+.3f} → {res_low['dm_tel']:+.3f} (gain={dm_full_change:+.3f})")
-        print(f"    Kontribusi: L(Kastner)={dm_L_only:+.3f} | B(Schaefer)={dm_B_only:+.3f} | interaksi={dm_interaction:+.3f}")
+        print(f"    Kontribusi: Kastner(L)={dm_L_only:+.3f} | Schaefer(B)={dm_B_only:+.3f} | interaksi={dm_interaction:+.3f}")
 
-    return pd.DataFrame(decomp_rows)
+    decomp_df = pd.DataFrame(decomp_rows)
 
+    # Ringkasan
+    if len(decomp_df) > 0:
+        mean_L = decomp_df['Kontribusi_L (%)'].mean()
+        mean_B = decomp_df['Kontribusi_B (%)'].mean()
+        print(f"\n  Rata-rata kontribusi: Kastner(L)={mean_L:.1f}%  Schaefer(B)={mean_B:.1f}%")
+        dominant = "Kastner (luminansi)" if mean_L > mean_B else "Schaefer (sky brightness)"
+        print(f"  → Jalur dominan: {dominant}")
 
-# ═══════════════════════════════════════════════════════════════════
-# TAHAP 4d: PERBANDINGAN ANTAR LOKASI PER EVENT
-# ═══════════════════════════════════════════════════════════════════
-
-def analyze_inter_location(df: pd.DataFrame) -> pd.DataFrame:
-    """Perbandingan statistik antar lokasi pada event yang sama."""
-    print("\n" + "═" * 70)
-    print("TAHAP 4d: PERBANDINGAN ANTAR LOKASI PER EVENT")
-    print("═" * 70)
-
-    event_rows = []
-    for tgl in sorted(df['Tanggal'].unique()):
-        sub = df[df['Tanggal'] == tgl]
-        y_sub = sub[sub['Obs (Y/N)'] == 'Y']
-        n_sub = sub[sub['Obs (Y/N)'] == 'N']
-
-        event_rows.append({
-            'Event': str(tgl),
-            'N_total': len(sub),
-            'N_Y': len(y_sub),
-            'N_N': len(n_sub),
-            'RH_Y_mean': y_sub['RH (%)'].mean() if len(y_sub) > 0 else None,
-            'RH_N_mean': n_sub['RH (%)'].mean() if len(n_sub) > 0 else None,
-            'RH_diff': (y_sub['RH (%)'].mean() - n_sub['RH (%)'].mean())
-                       if len(y_sub) > 0 and len(n_sub) > 0 else None,
-            'k_V_Y_mean': y_sub['k_V'].mean() if len(y_sub) > 0 else None,
-            'k_V_N_mean': n_sub['k_V'].mean() if len(n_sub) > 0 else None,
-            'k_V_diff': (y_sub['k_V'].mean() - n_sub['k_V'].mean())
-                        if len(y_sub) > 0 and len(n_sub) > 0 else None,
-            'Δm_Y_mean': y_sub['Δm Tel Opt'].mean() if len(y_sub) > 0 else None,
-            'Δm_N_mean': n_sub['Δm Tel Opt'].mean() if len(n_sub) > 0 else None,
-            'Elong_range': f"{sub['Elongasi (°)'].min():.2f}-{sub['Elongasi (°)'].max():.2f}",
-        })
-
-        if len(y_sub) > 0:
-            print(f"\n  {tgl}:")
-            print(f"    Y obs: RH_mean={y_sub['RH (%)'].mean():.1f}%, k_V_mean={y_sub['k_V'].mean():.4f}")
-            print(f"    N obs: RH_mean={n_sub['RH (%)'].mean():.1f}%, k_V_mean={n_sub['k_V'].mean():.4f}")
-            rh_diff = y_sub['RH (%)'].mean() - n_sub['RH (%)'].mean()
-            print(f"    ΔRH(Y-N) = {rh_diff:+.1f}pp → {'Y lebih lembab' if rh_diff > 0 else 'Y lebih kering'}")
-
-    return pd.DataFrame(event_rows)
+    return decomp_df
 
 
 # ═══════════════════════════════════════════════════════════════════
-# TAHAP 5c: ESTIMASI ERROR BAR
+# 4.5.3 — ERROR BAR DARI KETIDAKPASTIAN ERA5
 # ═══════════════════════════════════════════════════════════════════
 
 def analyze_error_bars(sensitivity_df: pd.DataFrame, critical_df: pd.DataFrame) -> pd.DataFrame:
-    """Estimasi error bar Δm berdasarkan ketidakpastian RH ERA5."""
+    """Estimasi error bar Δm berdasarkan ketidakpastian RH ERA5.
+
+    Sesuai arsitektur 4.5.3:
+    - σ_RH dari literatur validasi ERA5 tropis: ±5, ±10, ±15 pp
+    - Per observasi: Δm_low, Δm_high → error bar
+    - Per FN: apakah interval mencakup Δm = 0?
+    - Fraksi FN konsisten per level σ_RH
+    """
     print("\n" + "═" * 70)
-    print("TAHAP 5c: ESTIMASI ERROR BAR Δm")
+    print("4.5.3  ERROR BAR Δm DARI KETIDAKPASTIAN ERA5")
     print("═" * 70)
 
-    # ERA5 RH uncertainty di tropis: ~5-15% (literatur)
-    RH_UNCERTAINTY = [5, 10, 15]
+    RH_UNCERTAINTY = [5, 10, 15]  # pp
 
     rows = []
     for _, cr in critical_df.iterrows():
         obs_no = cr['No']
         dm_base = cr['Δm_Tel_baseline']
+        tipe = cr['Tipe']
 
-        # Cari sensitivity data
         obs_sens = sensitivity_df[sensitivity_df['No'] == obs_no]
 
         for unc in RH_UNCERTAINTY:
-            # Δm at RH-uncertainty
+            # Δm at RH ± uncertainty
             dm_low = obs_sens[obs_sens['ΔRH'] == -unc]
             dm_high = obs_sens[obs_sens['ΔRH'] == unc]
 
@@ -542,15 +610,15 @@ def analyze_error_bars(sensitivity_df: pd.DataFrame, critical_df: pd.DataFrame) 
             dm_high_val = dm_high['Δm_Tel'].values[0] if len(dm_high) > 0 else dm_base
 
             error_bar = (dm_low_val - dm_high_val) / 2.0
-            covers_zero = (dm_low_val >= 0) or (dm_high_val >= 0)
+            covers_zero = (min(dm_low_val, dm_high_val) <= 0 <= max(dm_low_val, dm_high_val))
 
             rows.append({
                 'No': obs_no,
                 'Lokasi': cr['Lokasi'],
                 'Obs': cr['Obs'],
-                'Tipe': cr['Tipe'],
+                'Tipe': tipe,
                 'Δm_baseline': dm_base,
-                'RH_uncertainty (±pp)': unc,
+                'σ_RH (±pp)': unc,
                 'Δm_low_RH': dm_low_val,
                 'Δm_high_RH': dm_high_val,
                 'Error_bar (±mag)': abs(error_bar),
@@ -559,25 +627,187 @@ def analyze_error_bars(sensitivity_df: pd.DataFrame, critical_df: pd.DataFrame) 
 
     result = pd.DataFrame(rows)
 
-    # Print ringkasan
+    # Ringkasan per level σ_RH
+    print("\n  Fraksi FN yang error bar mencakup Δm=0:")
     for unc in RH_UNCERTAINTY:
-        sub = result[result['RH_uncertainty (±pp)'] == unc]
+        sub = result[result['σ_RH (±pp)'] == unc]
         fn_sub = sub[sub['Tipe'] == 'FN']
         n_covers = sum(fn_sub['Mencakup_Δm=0'] == 'Ya')
-        print(f"\n  Ketidakpastian RH ±{unc}pp:")
-        print(f"    FN yang error bar mencakup Δm=0: {n_covers}/{len(fn_sub)}")
-        print(f"    → {n_covers/len(fn_sub)*100:.0f}% FN konsisten dengan observasi "
-              f"dalam batas ketidakpastian" if len(fn_sub) > 0 else "")
+        if len(fn_sub) > 0:
+            frac = n_covers / len(fn_sub) * 100
+            print(f"    ±{unc:2d} pp:  {n_covers}/{len(fn_sub)} FN ({frac:.0f}%) konsisten")
+        else:
+            print(f"    ±{unc:2d} pp:  tidak ada FN")
+
+    # Argumen kunci
+    fn_15 = result[(result['σ_RH (±pp)'] == 15) & (result['Tipe'] == 'FN')]
+    if len(fn_15) > 0:
+        n_covers_15 = sum(fn_15['Mencakup_Δm=0'] == 'Ya')
+        if n_covers_15 / len(fn_15) > 0.5:
+            print(f"\n  → Mayoritas FN ({n_covers_15}/{len(fn_15)}) konsisten dalam ±15 pp:")
+            print("    masalah utama kemungkinan kualitas data input, bukan model fisika")
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 4.5.4 — PERBANDINGAN ERA5 vs MERRA-2
+# ═══════════════════════════════════════════════════════════════════
+
+def analyze_era5_vs_merra2(df_era5: pd.DataFrame, df_merra2: pd.DataFrame) -> pd.DataFrame:
+    """Bandingkan output model menggunakan ERA5 vs MERRA-2.
+
+    Sesuai arsitektur 4.5.4:
+    - Scatter plot: Δm(ERA5) vs Δm(MERRA-2)
+    - Korelasi Pearson/Spearman
+    - Selisih RH dan kV antara kedua sumber
+    - Confusion matrix MERRA-2 pada F optimal yang sama
+    """
+    print("\n" + "═" * 70)
+    print("4.5.4  PERBANDINGAN ERA5 vs MERRA-2")
+    print("═" * 70)
+
+    # Merge on No
+    merged = pd.merge(
+        df_era5[['No', 'Lokasi', 'Obs (Y/N)', 'Cocok?',
+                 'RH (%)', 'k_V', 'T (°C)', 'Δm Tel Opt']],
+        df_merra2[['No', 'RH (%)', 'k_V', 'T (°C)', 'Δm Tel Opt', 'Cocok?']],
+        on='No', suffixes=('_ERA5', '_MERRA2')
+    )
+
+    # Hitung selisih
+    merged['ΔRH (M2-E5)'] = merged['RH (%)_MERRA2'] - merged['RH (%)_ERA5']
+    merged['Δk_V (M2-E5)'] = merged['k_V_MERRA2'] - merged['k_V_ERA5']
+    merged['ΔΔm (M2-E5)'] = merged['Δm Tel Opt_MERRA2'] - merged['Δm Tel Opt_ERA5']
+
+    print(f"\n  Observasi yang dibandingkan: {len(merged)}")
+
+    # Statistik selisih
+    print("\n  Selisih (MERRA-2 − ERA5):")
+    for var, label in [('ΔRH (M2-E5)', 'RH (pp)'),
+                       ('Δk_V (M2-E5)', 'k_V'),
+                       ('ΔΔm (M2-E5)', 'Δm Tel')]:
+        vals = merged[var].dropna()
+        print(f"    {label:10s}: mean={vals.mean():+.3f}  std={vals.std():.3f}  "
+              f"range=[{vals.min():+.3f}, {vals.max():+.3f}]")
+
+    # Korelasi Δm
+    from scipy import stats as sp_stats
+
+    dm_era5 = merged['Δm Tel Opt_ERA5'].values
+    dm_merra2 = merged['Δm Tel Opt_MERRA2'].values
+
+    # Filter valid pairs
+    valid = (dm_era5 > -90) & (dm_merra2 > -90)
+    dm_e = dm_era5[valid]
+    dm_m = dm_merra2[valid]
+
+    if len(dm_e) >= 3:
+        r_pearson, p_pearson = sp_stats.pearsonr(dm_e, dm_m)
+        r_spearman, p_spearman = sp_stats.spearmanr(dm_e, dm_m)
+        print(f"\n  Korelasi Δm_Tel:")
+        print(f"    Pearson  r = {r_pearson:.4f}  (p = {p_pearson:.4e})")
+        print(f"    Spearman ρ = {r_spearman:.4f}  (p = {p_spearman:.4e})")
+    else:
+        r_pearson = r_spearman = float('nan')
+        print("\n  [!] Terlalu sedikit data valid untuk korelasi.")
+
+    # Confusion matrix MERRA-2
+    print("\n  Confusion Matrix MERRA-2 (F optimal yang sama):")
+    obs_vals = merged['Obs (Y/N)'].values
+    cocok_m2 = merged['Cocok?_MERRA2'].values
+
+    tp_m2 = sum((obs_vals == 'Y') & (cocok_m2 == '✓'))
+    fn_m2 = sum((obs_vals == 'Y') & (cocok_m2 != '✓'))
+    tn_m2 = sum((obs_vals == 'N') & (cocok_m2 == '✓'))
+    fp_m2 = sum((obs_vals == 'N') & (cocok_m2 != '✓'))
+
+    # ERA5 confusion matrix untuk perbandingan
+    cocok_e5 = merged['Cocok?_ERA5'].values
+    tp_e5 = sum((obs_vals == 'Y') & (cocok_e5 == '✓'))
+    fn_e5 = sum((obs_vals == 'Y') & (cocok_e5 != '✓'))
+    tn_e5 = sum((obs_vals == 'N') & (cocok_e5 == '✓'))
+    fp_e5 = sum((obs_vals == 'N') & (cocok_e5 != '✓'))
+
+    n_total = len(merged)
+    n_y = sum(obs_vals == 'Y')
+    n_n = sum(obs_vals == 'N')
+
+    def calc_metrics(tp, fn, tn, fp):
+        n = tp + fn + tn + fp
+        acc = (tp + tn) / n if n > 0 else 0
+        sens = tp / (tp + fn) if (tp + fn) > 0 else 0
+        spec = tn / (tn + fp) if (tn + fp) > 0 else 0
+        ba = (sens + spec) / 2
+        denom_mcc = math.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+        mcc = (tp*tn - fp*fn) / denom_mcc if denom_mcc > 0 else 0
+        return acc, sens, spec, ba, mcc
+
+    acc_e5, sens_e5, spec_e5, ba_e5, mcc_e5 = calc_metrics(tp_e5, fn_e5, tn_e5, fp_e5)
+    acc_m2, sens_m2, spec_m2, ba_m2, mcc_m2 = calc_metrics(tp_m2, fn_m2, tn_m2, fp_m2)
+
+    print(f"                  ERA5      MERRA-2")
+    print(f"    TP          : {tp_e5:5d}      {tp_m2:5d}")
+    print(f"    FN          : {fn_e5:5d}      {fn_m2:5d}")
+    print(f"    TN          : {tn_e5:5d}      {tn_m2:5d}")
+    print(f"    FP          : {fp_e5:5d}      {fp_m2:5d}")
+    print(f"    Accuracy    : {acc_e5:.1%}     {acc_m2:.1%}")
+    print(f"    Sensitivity : {sens_e5:.1%}     {sens_m2:.1%}")
+    print(f"    Specificity : {spec_e5:.1%}     {spec_m2:.1%}")
+    print(f"    Bal. Acc.   : {ba_e5:.1%}     {ba_m2:.1%}")
+    print(f"    MCC         : {mcc_e5:+.3f}     {mcc_m2:+.3f}")
+
+    # Interpretasi
+    dm_diff_std = merged['ΔΔm (M2-E5)'].std()
+    if dm_diff_std > 0.3:
+        print(f"\n  → Hasil BERBEDA signifikan (σ_ΔΔm = {dm_diff_std:.3f}):")
+        print("    data atmosfer merupakan bottleneck utama")
+    else:
+        print(f"\n  → Hasil CUKUP KONSISTEN (σ_ΔΔm = {dm_diff_std:.3f}):")
+        print("    model robust terhadap sumber data atmosfer")
+
+    # Prediksi diskordansi (obs yang berubah status)
+    discordant = merged[cocok_e5 != cocok_m2]
+    if len(discordant) > 0:
+        print(f"\n  Observasi dengan prediksi berbeda ({len(discordant)}):")
+        for _, d in discordant.iterrows():
+            print(f"    #{int(d['No']):2d} {d['Lokasi'][:25]:25s} "
+                  f"ERA5={'✓' if d['Cocok?_ERA5']=='✓' else '✗'} "
+                  f"MERRA2={'✓' if d['Cocok?_MERRA2']=='✓' else '✗'} "
+                  f"ΔRH={d['ΔRH (M2-E5)']:+.1f}pp")
+
+    # Output dataframe
+    output_df = merged[['No', 'Lokasi', 'Obs (Y/N)',
+                        'RH (%)_ERA5', 'RH (%)_MERRA2', 'ΔRH (M2-E5)',
+                        'k_V_ERA5', 'k_V_MERRA2', 'Δk_V (M2-E5)',
+                        'Δm Tel Opt_ERA5', 'Δm Tel Opt_MERRA2', 'ΔΔm (M2-E5)',
+                        'Cocok?_ERA5', 'Cocok?_MERRA2']].copy()
+
+    # Tambah baris ringkasan korelasi
+    summary_rows = pd.DataFrame([{
+        'No': '', 'Lokasi': 'KORELASI',
+        'Obs (Y/N)': '',
+        'RH (%)_ERA5': '', 'RH (%)_MERRA2': '',
+        'ΔRH (M2-E5)': merged['ΔRH (M2-E5)'].mean(),
+        'k_V_ERA5': '', 'k_V_MERRA2': '',
+        'Δk_V (M2-E5)': merged['Δk_V (M2-E5)'].mean(),
+        'Δm Tel Opt_ERA5': f'r={r_pearson:.3f}',
+        'Δm Tel Opt_MERRA2': f'ρ={r_spearman:.3f}',
+        'ΔΔm (M2-E5)': merged['ΔΔm (M2-E5)'].mean(),
+        'Cocok?_ERA5': f'{acc_e5:.1%}',
+        'Cocok?_MERRA2': f'{acc_m2:.1%}',
+    }])
+    output_df = pd.concat([output_df, summary_rows], ignore_index=True)
+
+    return output_df
 
 
 # ═══════════════════════════════════════════════════════════════════
 # OUTPUT: EXCEL
 # ═══════════════════════════════════════════════════════════════════
 
-def save_results(kv_df, sensitivity_df, critical_df, decomp_df,
-                 event_df, error_bar_df, filepath):
+def save_results(sensitivity_df, critical_df, decomp_df,
+                 error_bar_df, merra2_df, filepath):
     """Simpan semua hasil ke Excel."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -598,7 +828,7 @@ def save_results(kv_df, sensitivity_df, critical_df, decomp_df,
         'highlight': PatternFill('solid', fgColor='FFEB9C'),
     }
 
-    def write_df_to_sheet(ws, df, sheet_name, highlight_col=None, highlight_val=None):
+    def write_df_to_sheet(ws, df, sheet_name):
         ws.title = sheet_name
         headers = list(df.columns)
         for ci, h in enumerate(headers, 1):
@@ -629,6 +859,8 @@ def save_results(kv_df, sensitivity_df, critical_df, decomp_df,
                     tipe_val = ws.cell(row=ri, column=tipe_ci).value
                     if tipe_val == 'FN':
                         c.fill = sty['fn_fill']
+                    elif tipe_val == 'FP':
+                        c.fill = sty['highlight']
 
         for ci in range(1, len(headers) + 1):
             max_len = max(len(str(headers[ci-1])),
@@ -637,11 +869,7 @@ def save_results(kv_df, sensitivity_df, critical_df, decomp_df,
             ws.column_dimensions[get_column_letter(ci)].width = min(max_len + 2, 25)
         ws.freeze_panes = 'A2'
 
-    # Sheet 1: Korelasi k_V
-    ws1 = wb.active
-    write_df_to_sheet(ws1, kv_df, "4a Korelasi kV")
-
-    # Sheet 2: Sensitivitas RH (pivot: satu baris per observasi)
+    # Sheet 1: Sensitivitas RH (pivot)
     pivot_rows = []
     for obs_no in sorted(sensitivity_df['No'].unique()):
         obs_data = sensitivity_df[sensitivity_df['No'] == obs_no]
@@ -664,33 +892,41 @@ def save_results(kv_df, sensitivity_df, critical_df, decomp_df,
                 prow[f'k_V(ΔRH={delta:+d})'] = round(d.iloc[0]['k_V'], 4)
         pivot_rows.append(prow)
 
+    ws1 = wb.active
+    write_df_to_sheet(ws1, pd.DataFrame(pivot_rows), "4.5.1 Sensitivitas RH")
+
+    # Sheet 2: RH Kritis + Kategorisasi FN
     ws2 = wb.create_sheet()
-    write_df_to_sheet(ws2, pd.DataFrame(pivot_rows), "4b Sensitivitas RH")
+    write_df_to_sheet(ws2, critical_df, "4.5.1 RH Kritis + Kat FN")
 
-    # Sheet 3: RH Kritis
+    # Sheet 3: Dekomposisi Error
     ws3 = wb.create_sheet()
-    write_df_to_sheet(ws3, critical_df, "4b RH Kritis")
+    if len(decomp_df) > 0:
+        write_df_to_sheet(ws3, decomp_df, "4.5.2 Dekomposisi Jalur")
+    else:
+        ws3.title = "4.5.2 Dekomposisi Jalur"
+        ws3.cell(row=1, column=1, value="Tidak ada FN/FP untuk didekomposisi")
 
-    # Sheet 4: Dekomposisi Error
+    # Sheet 4: Error Bar
     ws4 = wb.create_sheet()
-    write_df_to_sheet(ws4, decomp_df, "4c Dekomposisi Error")
+    write_df_to_sheet(ws4, error_bar_df, "4.5.3 Error Bar ERA5")
 
-    # Sheet 5: Per-Event
+    # Sheet 5: ERA5 vs MERRA-2
     ws5 = wb.create_sheet()
-    write_df_to_sheet(ws5, event_df, "4d Per-Event")
+    if merra2_df is not None and len(merra2_df) > 0:
+        write_df_to_sheet(ws5, merra2_df, "4.5.4 ERA5 vs MERRA-2")
+    else:
+        ws5.title = "4.5.4 ERA5 vs MERRA-2"
+        ws5.cell(row=1, column=1, value="Data MERRA-2 tidak tersedia")
 
-    # Sheet 6: Error Bar
+    # Sheet 6: Sensitivitas Detail (raw data)
     ws6 = wb.create_sheet()
-    write_df_to_sheet(ws6, error_bar_df, "5c Error Bar")
-
-    # Sheet 7: Sensitivitas Detail (raw data)
-    ws7 = wb.create_sheet()
-    write_df_to_sheet(ws7, sensitivity_df, "Data Detail Sensitivitas")
+    write_df_to_sheet(ws6, sensitivity_df, "Data Detail Sensitivitas")
 
     # Save
     os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
     wb.save(filepath)
-    print(f"\n  ✓ Excel disimpan: {filepath}")
+    print(f"\n  Saved: {filepath}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -699,57 +935,65 @@ def save_results(kv_df, sensitivity_df, critical_df, decomp_df,
 
 def plot_sensitivity(sensitivity_df: pd.DataFrame, critical_df: pd.DataFrame,
                      filepath: str):
-    """Plot sensitivitas Δm vs ΔRH untuk observasi FN."""
+    """Plot sensitivitas Δm vs ΔRH untuk observasi FN dan FP."""
     try:
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        import matplotlib.ticker as ticker
     except ImportError:
         print("  [!] matplotlib tidak tersedia.")
         return
 
-    fn_data = sensitivity_df[sensitivity_df['Tipe'] == 'FN']
-    if len(fn_data) == 0:
-        print("  [!] Tidak ada data FN untuk diplot.")
+    # Plot FN dan FP (sesuai arsitektur: "terutama FN dan FP")
+    misclass = sensitivity_df[sensitivity_df['Tipe'].isin(['FN', 'FP'])]
+    if len(misclass) == 0:
+        print("  [!] Tidak ada data FN/FP untuk diplot.")
         return
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
 
-    # ── Plot 1: Δm_Tel vs ΔRH untuk setiap FN ──
+    # ── Plot 1: Δm_Tel vs ΔRH untuk setiap FN/FP ──
     ax1 = axes[0]
-    fn_obs = sorted(fn_data['No'].unique())
-    colors = plt.cm.tab10(range(len(fn_obs)))
+    obs_list = sorted(misclass['No'].unique())
+    colors = plt.cm.tab10(range(len(obs_list)))
 
-    for i, obs_no in enumerate(fn_obs):
-        obs_data = fn_data[fn_data['No'] == obs_no].sort_values('ΔRH')
-        label = f"#{obs_no} {obs_data.iloc[0]['Lokasi'][:20]}"
+    for i, obs_no in enumerate(obs_list):
+        obs_data = misclass[misclass['No'] == obs_no].sort_values('ΔRH')
+        tipe = obs_data.iloc[0]['Tipe']
+        label = f"#{obs_no} {obs_data.iloc[0]['Lokasi'][:20]} ({tipe})"
+        marker = '*' if tipe == 'FN' else 's'
         ax1.plot(obs_data['ΔRH'], obs_data['Δm_Tel'],
-                 marker='o', markersize=5, color=colors[i],
+                 marker=marker, markersize=6, color=colors[i],
                  linewidth=2, label=label)
 
     ax1.axhline(y=0, color='green', linewidth=2, linestyle='--',
                 label='Threshold (Δm=0)', alpha=0.8)
     ax1.axvline(x=0, color='gray', linewidth=1, linestyle=':', alpha=0.5)
 
+    # Zona kategorisasi FN
+    ax1.axvspan(-5, 0, alpha=0.05, color='green', label='Zona A (near-miss)')
+    ax1.axvspan(-20, -5, alpha=0.05, color='orange', label='Zona B (correctable)')
+
     ax1.set_xlabel('Perubahan RH (pp)', fontsize=12, fontweight='bold')
     ax1.set_ylabel('Δm Teleskop (mag)', fontsize=12, fontweight='bold')
-    ax1.set_title('Sensitivitas Δm terhadap Perubahan RH\n(Observasi False Negative)',
+    ax1.set_title('4.5.1  Sensitivitas Δm terhadap Perubahan RH\n'
+                  '(Observasi Misclassified: FN/FP)',
                   fontsize=13, fontweight='bold')
-    ax1.legend(fontsize=8, loc='best')
+    ax1.legend(fontsize=7, loc='best')
     ax1.grid(True, alpha=0.3)
 
     # ── Plot 2: k_V vs Δm untuk semua observasi ──
     ax2 = axes[1]
     all_base = sensitivity_df[sensitivity_df['ΔRH'] == 0]
-    tn = all_base[all_base['Tipe'] == 'TN']
-    fn = all_base[all_base['Tipe'] == 'FN']
-
-    ax2.scatter(tn['k_V'], tn['Δm_Tel'], c='blue', s=50, alpha=0.7,
-                label=f'TN (n={len(tn)})', edgecolors='black', linewidths=0.5)
-    ax2.scatter(fn['k_V'], fn['Δm_Tel'], c='red', s=80, alpha=0.9,
-                label=f'FN (n={len(fn)})', edgecolors='black', linewidths=0.5,
-                marker='*', zorder=5)
+    for tipe, color, marker, sz in [('TN', 'blue', 'o', 50),
+                                     ('TP', 'green', 'D', 70),
+                                     ('FN', 'red', '*', 100),
+                                     ('FP', 'orange', 's', 70)]:
+        sub = all_base[all_base['Tipe'] == tipe]
+        if len(sub) > 0:
+            ax2.scatter(sub['k_V'], sub['Δm_Tel'], c=color, s=sz, alpha=0.8,
+                        label=f'{tipe} (n={len(sub)})', edgecolors='black',
+                        linewidths=0.5, marker=marker, zorder=5 if tipe in ('FN','FP') else 3)
 
     ax2.axhline(y=0, color='green', linewidth=2, linestyle='--', alpha=0.8)
     ax2.set_xlabel('Koefisien Ekstingsi k_V', fontsize=12, fontweight='bold')
@@ -762,11 +1006,11 @@ def plot_sensitivity(sensitivity_df: pd.DataFrame, critical_df: pd.DataFrame,
     plt.tight_layout()
     fig.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  ✓ Plot disimpan: {filepath}")
+    print(f"  Saved: {filepath}")
 
 
 def plot_decomposition(decomp_df: pd.DataFrame, filepath: str):
-    """Plot dekomposisi kontribusi error."""
+    """Plot dekomposisi kontribusi error (jalur Kastner vs Schaefer)."""
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -783,21 +1027,21 @@ def plot_decomposition(decomp_df: pd.DataFrame, filepath: str):
     x = range(len(labels))
     w = 0.25
 
-    bars_L = [r['Δm_dari_L (k_V→Kastner)'] for _, r in decomp_df.iterrows()]
-    bars_B = [r['Δm_dari_B (k_V→Schaefer)'] for _, r in decomp_df.iterrows()]
+    bars_L = [r['Δm_dari_L (Kastner)'] for _, r in decomp_df.iterrows()]
+    bars_B = [r['Δm_dari_B (Schaefer)'] for _, r in decomp_df.iterrows()]
     bars_I = [r['Δm_interaksi'] for _, r in decomp_df.iterrows()]
 
-    ax.bar([i - w for i in x], bars_L, w, label='Luminansi (k_V→Kastner)',
+    ax.bar([i - w for i in x], bars_L, w, label='Luminansi (Kastner)',
            color='#E74C3C', edgecolor='black', linewidth=0.5)
-    ax.bar(x, bars_B, w, label='Sky Brightness (k_V→Schaefer)',
+    ax.bar(x, bars_B, w, label='Sky Brightness (Schaefer)',
            color='#3498DB', edgecolor='black', linewidth=0.5)
     ax.bar([i + w for i in x], bars_I, w, label='Interaksi',
            color='#95A5A6', edgecolor='black', linewidth=0.5)
 
-    ax.set_xlabel('Observasi False Negative', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Observasi Misclassified', fontsize=12, fontweight='bold')
     ax.set_ylabel('Kontribusi ke Δ(Δm) [mag]', fontsize=12, fontweight='bold')
-    ax.set_title('Dekomposisi Perubahan Δm saat RH Dikurangi 20pp\n'
-                 'Kontribusi: Luminansi Hilal vs Sky Brightness vs Interaksi',
+    ax.set_title('4.5.2  Dekomposisi Perubahan Δm saat RH Dikurangi 20pp\n'
+                 'Jalur Kastner (luminansi) vs Schaefer (sky brightness)',
                  fontsize=13, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
@@ -808,7 +1052,82 @@ def plot_decomposition(decomp_df: pd.DataFrame, filepath: str):
     plt.tight_layout()
     fig.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  ✓ Plot dekomposisi disimpan: {filepath}")
+    print(f"  Saved: {filepath}")
+
+
+def plot_era5_vs_merra2(df_era5: pd.DataFrame, df_merra2: pd.DataFrame, filepath: str):
+    """Scatter plot Δm(ERA5) vs Δm(MERRA-2) sesuai arsitektur 4.5.4."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("  [!] matplotlib tidak tersedia.")
+        return
+
+    merged = pd.merge(
+        df_era5[['No', 'Lokasi', 'Obs (Y/N)', 'Δm Tel Opt']],
+        df_merra2[['No', 'Δm Tel Opt']],
+        on='No', suffixes=('_ERA5', '_MERRA2')
+    )
+
+    valid = (merged['Δm Tel Opt_ERA5'] > -90) & (merged['Δm Tel Opt_MERRA2'] > -90)
+    merged = merged[valid]
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    # ── Plot 1: Scatter Δm ──
+    ax1 = axes[0]
+    y_obs = merged[merged['Obs (Y/N)'] == 'Y']
+    n_obs = merged[merged['Obs (Y/N)'] == 'N']
+
+    ax1.scatter(n_obs['Δm Tel Opt_ERA5'], n_obs['Δm Tel Opt_MERRA2'],
+                c='blue', s=50, alpha=0.7, label=f'N (n={len(n_obs)})',
+                edgecolors='black', linewidths=0.5)
+    ax1.scatter(y_obs['Δm Tel Opt_ERA5'], y_obs['Δm Tel Opt_MERRA2'],
+                c='red', s=80, alpha=0.9, label=f'Y (n={len(y_obs)})',
+                edgecolors='black', linewidths=0.5, marker='*', zorder=5)
+
+    # Diagonal line (perfect agreement)
+    all_dm = list(merged['Δm Tel Opt_ERA5']) + list(merged['Δm Tel Opt_MERRA2'])
+    lims = [min(all_dm) - 0.2, max(all_dm) + 0.2]
+    ax1.plot(lims, lims, 'k--', alpha=0.5, label='1:1 line')
+    ax1.axhline(y=0, color='green', linewidth=1, linestyle=':', alpha=0.5)
+    ax1.axvline(x=0, color='green', linewidth=1, linestyle=':', alpha=0.5)
+
+    ax1.set_xlabel('Δm Teleskop (ERA5)', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Δm Teleskop (MERRA-2)', fontsize=12, fontweight='bold')
+    ax1.set_title('4.5.4  Δm(ERA5) vs Δm(MERRA-2)', fontsize=13, fontweight='bold')
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_aspect('equal')
+
+    # ── Plot 2: Selisih RH ──
+    ax2 = axes[1]
+    merged_rh = pd.merge(
+        df_era5[['No', 'Lokasi', 'Obs (Y/N)', 'RH (%)']],
+        df_merra2[['No', 'RH (%)']],
+        on='No', suffixes=('_ERA5', '_MERRA2')
+    )
+    merged_rh['ΔRH'] = merged_rh['RH (%)_MERRA2'] - merged_rh['RH (%)_ERA5']
+
+    ax2.bar(range(len(merged_rh)), merged_rh['ΔRH'],
+            color=['red' if v > 0 else 'blue' for v in merged_rh['ΔRH']],
+            edgecolor='black', linewidth=0.5, alpha=0.7)
+    ax2.set_xlabel('Observasi (No)', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('ΔRH = MERRA-2 − ERA5 (pp)', fontsize=12, fontweight='bold')
+    ax2.set_title('Selisih RH antara MERRA-2 dan ERA5\nper Observasi',
+                  fontsize=13, fontweight='bold')
+    ax2.set_xticks(range(len(merged_rh)))
+    ax2.set_xticklabels([f"#{int(n)}" for n in merged_rh['No']],
+                        rotation=90, fontsize=8)
+    ax2.axhline(y=0, color='black', linewidth=1)
+    ax2.grid(True, axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    fig.savefig(filepath, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Saved: {filepath}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -818,76 +1137,90 @@ def plot_decomposition(decomp_df: pd.DataFrame, filepath: str):
 def main():
     print("\n" + "█" * 70)
     print("  ANALISIS DIAGNOSTIK MODEL CRUMEY (2014)")
-    print("  Tahap 4a-4d & 5c")
+    print("  Tahap 4.5: Analisis Sensitivitas dan Ketidakpastian")
     print("█" * 70)
 
-    # Baca input
-    if not os.path.exists(INPUT_XLSX):
-        print(f"\n  [!] File tidak ditemukan: {INPUT_XLSX}")
+    # ── Baca input ERA5 ──
+    if not os.path.exists(INPUT_ERA5):
+        print(f"\n  [!] File tidak ditemukan: {INPUT_ERA5}")
         print("  Jalankan batch_validation_crumey.py terlebih dahulu.")
         return
 
-    print(f"\n  Membaca: {INPUT_XLSX}")
-    df = pd.read_excel(INPUT_XLSX, sheet_name="Hasil Observasi")
-    print(f"  {len(df)} observasi dimuat.\n")
+    print(f"\n  Membaca ERA5: {INPUT_ERA5}")
+    df_era5 = load_observation_data(INPUT_ERA5)
+    print(f"  {len(df_era5)} observasi dimuat.")
 
-    # ── Tahap 4a ──
-    kv_df = analyze_kv_correlation(df)
+    # ── Baca input MERRA-2 (opsional) ──
+    df_merra2 = None
+    if os.path.exists(INPUT_MERRA2):
+        print(f"  Membaca MERRA-2: {INPUT_MERRA2}")
+        df_merra2 = load_merra2_data(INPUT_MERRA2)
+        print(f"  {len(df_merra2)} observasi dimuat.")
+    else:
+        print(f"  [!] File MERRA-2 tidak ditemukan: {INPUT_MERRA2}")
+        print("      Tahap 4.5.4 akan dilewati.")
 
-    # ── Tahap 4b ──
-    sensitivity_df, critical_df = analyze_rh_sensitivity(df)
+    # ── 4.5.1: Sensitivitas OAT terhadap RH ──
+    sensitivity_df, critical_df = analyze_rh_sensitivity(df_era5)
 
-    # ── Tahap 4c ──
-    decomp_df = analyze_error_decomposition(df)
+    # ── 4.5.2: Dekomposisi Jalur Error ──
+    decomp_df = analyze_error_decomposition(df_era5)
 
-    # ── Tahap 4d ──
-    event_df = analyze_inter_location(df)
-
-    # ── Tahap 5c ──
+    # ── 4.5.3: Error Bar dari Ketidakpastian ERA5 ──
     error_bar_df = analyze_error_bars(sensitivity_df, critical_df)
+
+    # ── 4.5.4: Perbandingan ERA5 vs MERRA-2 ──
+    merra2_df = None
+    if df_merra2 is not None:
+        merra2_df = analyze_era5_vs_merra2(df_era5, df_merra2)
 
     # ── Ringkasan Akhir ──
     print("\n" + "█" * 70)
-    print("  RINGKASAN TEMUAN DIAGNOSTIK")
+    print("  RINGKASAN TEMUAN DIAGNOSTIK (4.5)")
     print("█" * 70)
 
     fn_critical = critical_df[critical_df['Tipe'] == 'FN']
     n_fn = len(fn_critical)
-    n_reachable = sum(1 for _, r in fn_critical.iterrows()
-                      if isinstance(r['Butuh_ΔRH'], (int, float)) and r['Butuh_ΔRH'] >= -30)
+    fp_critical = critical_df[critical_df['Tipe'] == 'FP']
+    n_fp = len(fp_critical)
 
-    print(f"\n  Total FN (False Negative)     : {n_fn}")
-    print(f"  FN yg bisa diperbaiki ΔRH≤30pp: {n_reachable}/{n_fn}")
+    print(f"\n  False Negative (FN): {n_fn}")
+    if n_fn > 0:
+        for cat in ['A', 'B', 'C']:
+            n_cat = sum(fn_critical['Kategori_FN'] == cat)
+            print(f"    Kategori {cat}: {n_cat}/{n_fn}")
+    print(f"  False Positive (FP): {n_fp}")
 
     if len(decomp_df) > 0:
         mean_L = decomp_df['Kontribusi_L (%)'].mean()
         mean_B = decomp_df['Kontribusi_B (%)'].mean()
-        print(f"\n  Kontribusi rata-rata ke error (saat ΔRH=-20pp):")
-        print(f"    Luminansi hilal (Kastner) : {mean_L:.1f}%")
-        print(f"    Sky brightness (Schaefer) : {mean_B:.1f}%")
-        dominant = "Luminansi (Kastner)" if mean_L > mean_B else "Sky Brightness (Schaefer)"
-        print(f"    → Faktor dominan: {dominant}")
+        print(f"\n  Jalur error dominan (ΔRH=-20pp):")
+        print(f"    Kastner (luminansi) : {mean_L:.1f}%")
+        print(f"    Schaefer (sky bright): {mean_B:.1f}%")
 
     # ── Simpan ──
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, 'output')
+    excel_path = os.path.join(OUTPUT_DIR, "Analisis_Diagnostik_Crumey.xlsx")
+    save_results(sensitivity_df, critical_df, decomp_df,
+                 error_bar_df, merra2_df, excel_path)
 
-    excel_path = os.path.join(output_dir, "Analisis_Diagnostik_Crumey.xlsx")
-    save_results(kv_df, sensitivity_df, critical_df, decomp_df,
-                 event_df, error_bar_df, excel_path)
-
-    plot_path = os.path.join(output_dir, "Sensitivitas_RH_dan_kV.png")
+    plot_path = os.path.join(OUTPUT_DIR, "Sensitivitas_RH_dan_kV.png")
     plot_sensitivity(sensitivity_df, critical_df, plot_path)
 
-    decomp_plot_path = os.path.join(output_dir, "Dekomposisi_Error.png")
+    decomp_plot_path = os.path.join(OUTPUT_DIR, "Dekomposisi_Jalur_Error.png")
     plot_decomposition(decomp_df, decomp_plot_path)
 
+    if df_merra2 is not None:
+        merra2_plot_path = os.path.join(OUTPUT_DIR, "ERA5_vs_MERRA2.png")
+        plot_era5_vs_merra2(df_era5, df_merra2, merra2_plot_path)
+
     print(f"\n{'█' * 70}")
-    print("  ANALISIS SELESAI")
+    print("  ANALISIS 4.5 SELESAI")
     print(f"{'█' * 70}")
-    print(f"  Excel : {excel_path}")
-    print(f"  Plot 1: {plot_path}")
-    print(f"  Plot 2: {decomp_plot_path}")
+    print(f"  Excel       : {excel_path}")
+    print(f"  Plot 4.5.1  : {plot_path}")
+    print(f"  Plot 4.5.2  : {decomp_plot_path}")
+    if df_merra2 is not None:
+        print(f"  Plot 4.5.4  : {os.path.join(OUTPUT_DIR, 'ERA5_vs_MERRA2.png')}")
     print(f"{'█' * 70}\n")
 
 
