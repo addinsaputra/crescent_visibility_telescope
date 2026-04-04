@@ -72,13 +72,14 @@ TEL_MAG = 50.0
 TEL_TRANS = 0.95
 TEL_NSURFACES = 6
 TEL_OBSTRUCTION = 0.0
-TEL_AGE = 30.0
+TEL_AGE = 22.0
 
-# Field factors — F = 1.5 (optimal, sudah terkalibrasi; arsitektur §4.2)
-F_NAKED = 1.5
-F_TEL = 1.5
+# Field factors — F = 1.8 (optimal dari Tahap 4.2)
+F_NAKED = 1.8
+F_TEL = 1.8
 
-# Moon semidiameter (default, ~0.26°)
+# Moon semidiameter (rata-rata ~0.26°, variasi aktual ~0.25–0.27° per observasi
+# dari Phase_Angle dan semidiameter Skyfield; 0.26 cukup untuk analisis sensitivitas)
 MOON_SD_DEG = 0.26
 
 
@@ -1150,12 +1151,31 @@ def main():
     df_era5 = load_observation_data(INPUT_ERA5)
     print(f"  {len(df_era5)} observasi dimuat.")
 
+    # Recalculate Δm dan Cocok? pada F optimal (1.8)
+    # CSV asli menggunakan F_ref=1.5, perlu dikoreksi ke F_opt=1.8
+    F_REF = 1.5  # F yang digunakan saat batch run menghasilkan CSV
+    shift = 2.5 * math.log10(F_REF / F_TEL)
+    df_era5['Δm Tel Opt'] = df_era5['Δm Tel Opt'] + shift
+    df_era5['Cocok?'] = df_era5.apply(
+        lambda r: '✓' if (r['Δm Tel Opt'] > 0) == (r['Obs (Y/N)'] == 'Y') else '✗',
+        axis=1
+    )
+    print(f"  Prediksi dikoreksi dari F={F_REF} → F={F_TEL} (shift={shift:+.4f} mag)")
+
     # ── Baca input MERRA-2 (opsional) ──
     df_merra2 = None
     if os.path.exists(INPUT_MERRA2):
         print(f"  Membaca MERRA-2: {INPUT_MERRA2}")
         df_merra2 = load_merra2_data(INPUT_MERRA2)
         print(f"  {len(df_merra2)} observasi dimuat.")
+
+        # Koreksi yang sama untuk MERRA-2
+        df_merra2['Δm Tel Opt'] = df_merra2['Δm Tel Opt'] + shift
+        df_merra2['Cocok?'] = df_merra2.apply(
+            lambda r: '✓' if (r['Δm Tel Opt'] > 0) == (r['Obs (Y/N)'] == 'Y') else '✗',
+            axis=1
+        )
+        print(f"  Prediksi MERRA-2 dikoreksi ke F={F_TEL}")
     else:
         print(f"  [!] File MERRA-2 tidak ditemukan: {INPUT_MERRA2}")
         print("      Tahap 4.5.4 akan dilewati.")
