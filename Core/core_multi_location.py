@@ -1007,11 +1007,11 @@ def save_to_csv(results: List[dict], filepath: str):
 
             # Helper: format angka ke string (format standar internasional)
             def _f4(val):
-                return f"{val:.4f}" if r.get('success') else ''
+                return f"{float(val):.4f}" if r.get('success') else ''
             def _f2(val):
-                return f"{val:.2f}" if r.get('success') else ''
+                return f"{float(val):.2f}" if r.get('success') else ''
             def _full(val):
-                return repr(val) if r.get('success') else ''
+                return f"{float(val)}" if r.get('success') else ''
 
             row = [
                 str(r.get('no', '')),

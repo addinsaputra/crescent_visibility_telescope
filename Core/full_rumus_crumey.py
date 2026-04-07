@@ -313,10 +313,15 @@ def contrast_threshold(A_sr: float, B: float, F: float = 1.0,
         Untuk pengamatan nyata, paper menyarankan F ≈ 2 (Sec. 3.1).
         F mencakup: laboratory scaling, personal factor, age factor, dll.
     mode : str
-        'scotopic'  : gunakan bentuk sederhana (Eq. 47), valid B ≲ 0.1 cd/m²
+        'scotopic'  : bentuk sederhana (Eq. 47) — R_scotopic + Cinf_scotopic
+                      + q=0.6. PERHATIAN: R_scotopic/Cinf_scotopic hanya akurat
+                      untuk B ≲ 0.05 cd/m²; di atasnya divergen dari combined.
         'photopic'  : gunakan bentuk photopic
-        'combined'  : gunakan bentuk combined (semua level luminansi)
-        'auto'      : otomatis pilih scotopic jika B < 0.1, else combined
+        'combined'  : bentuk combined (Eq. 41) — R_combined + Cinf_combined
+                      + q(B). Valid di semua level luminansi, termasuk scotopic
+                      (karena q(B<0.193)=0.6 dan hyperbola asimptotik ke branch
+                      scotopic).
+        'auto'      : gunakan combined (Eq. 41) untuk semua B.
 
     Returns
     -------
@@ -331,19 +336,20 @@ def contrast_threshold(A_sr: float, B: float, F: float = 1.0,
     B_eff = max(B, B_FLOOR)
 
     if mode == 'auto':
-        mode = 'scotopic' if B_eff < 0.1 else 'combined'
+        mode = 'combined'
+
+    # Zero-background: Eq. 50-52 — berlaku untuk semua mode
+    # Pada B ≤ B_FLOOR, R dan C∞ diganti konstanta limit (ξ₁, ξ₂)
+    if B_eff <= B_FLOOR:
+        C = ((_XI1 / A_sr) ** 0.6 + _XI2 ** 0.6) ** (5.0 / 3.0)
+        return F * C
 
     if mode == 'scotopic':
-        if B_eff <= B_FLOOR:
-            # Regime zero-background: Eq. 50-52
-            # C = ((ξ₁/A)^(3/5) + ξ₂^(3/5))^(5/3)
-            C = ((_XI1 / A_sr) ** 0.6 + _XI2 ** 0.6) ** (5.0 / 3.0)
-        else:
-            # Scotopic normal: Eq. 47
-            # C = ((R/A)^(3/5) + C∞^(3/5))^(5/3)  dengan q = 0.6
-            R = R_scotopic(B_eff)
-            Cinf = Cinf_scotopic(B_eff)
-            C = ((R / A_sr) ** 0.6 + Cinf ** 0.6) ** (5.0 / 3.0)
+        # Scotopic normal: Eq. 47
+        # C = ((R/A)^(3/5) + C∞^(3/5))^(5/3)  dengan q = 0.6
+        R = R_scotopic(B_eff)
+        Cinf = Cinf_scotopic(B_eff)
+        C = ((R / A_sr) ** 0.6 + Cinf ** 0.6) ** (5.0 / 3.0)
 
     elif mode == 'photopic':
         R = R_photopic(B_eff)
@@ -392,7 +398,8 @@ def point_source_threshold_illuminance(B: float, F: float = 1.0,
     ----------
     B : float   Background luminance [cd/m²]
     F : float   Field factor
-    mode : str  'scotopic', 'combined', atau 'auto'
+    mode : str  'scotopic' (Eq. 32, akurat B ≲ 0.05), 'combined' (Eq. 34,
+                valid semua B), atau 'auto' (= combined)
 
     Returns
     -------
@@ -401,12 +408,13 @@ def point_source_threshold_illuminance(B: float, F: float = 1.0,
     B_eff = max(B, B_FLOOR) if B > 0 else B_FLOOR
 
     if mode == 'auto':
-        mode = 'scotopic' if B_eff < 0.1 else 'combined'
+        mode = 'combined'
+
+    # Zero-background: ΔI = F × ζ (Eq. 51/71) — berlaku untuk semua mode
+    if B_eff <= B_FLOOR:
+        return F * _ZETA
 
     if mode == 'scotopic':
-        if B_eff <= B_FLOOR:
-            # Zero-background: ΔI = F × ζ (Eq. 51/71)
-            return F * _ZETA
         # Eq. 32: ΔI = (r₁·B^¼ + r₂·B^½)²
         dI = (_r1 * B_eff ** 0.25 + _r2 * B_eff ** 0.5) ** 2
 
@@ -433,10 +441,15 @@ def ricco_area_sr(B: float) -> float:
     Target yang lebih kecil dari Ricco area tidak bisa dibedakan dari
     point source. Penting dalam astronomi: bintang samar bisa terlihat
     seperti nebula dan sebaliknya (lihat NGC di Dreyer 1971).
+
+    Menggunakan R_combined/Cinf_combined agar valid di semua level B.
     """
     B_eff = max(B, B_FLOOR)
-    R = R_scotopic(B_eff)
-    Cinf = Cinf_scotopic(B_eff)
+    if B_eff <= B_FLOOR:
+        # Zero-background limit: A_R = ξ₁ / ξ₂
+        return _XI1 / _XI2
+    R = R_combined(B_eff)
+    Cinf = Cinf_combined(B_eff)
     if Cinf <= 0:
         return float('inf')
     return R / Cinf
